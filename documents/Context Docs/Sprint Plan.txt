@@ -1,0 +1,44 @@
+The 5-Day "Antigravity" Final Sprint Plan
+
+Phase 1: The Bedrock (Data & Context)
+Objective: Establish the persistent memory and RAG capability.
+
+Infra-as-Code Setup. Provision the AlloyDB AI cluster and enable the Vertex AI and Cloud Run APIs.
+Data Layer Execution. Prompt the AI using your alloydb_setup.sql. Generate the SQLAlchemy models and a DatabaseManager class that handles both relational data (tasks/sessions) and vector operations (embeddings).
+RAG Ingestion Engine. Build a Python script to ingest the demo project notes. Use text-multimodal-embedding for generating vectors and store them in the embeddings table.
+
+Artifacts to refer: alloydb_setup.sql.
+
+Phase 2: Tooling & The MCP Gateway
+Objective: Build the "Hands" of the system via Model Context Protocol.
+
+MCP Server Development. Build a FastAPI-based "Connector" service. This service acts as the MCP host, exposing endpoints for Calendar, Task DB, and External APIs.
+Tool Definition. Create the tools.py file where each function is decorated with Pydantic schemas so Gemini can perform Function Calling with 100% accuracy.
+Containerization. Write the Dockerfile. Push the image to GitHub and deploy the first version to Cloud Run.
+
+Artifacts to refer: action_payloads.json, config.yaml.
+
+Phase 3: The Intelligence Layer (LangGraph Swarm)
+Objective: Wire the brains for multi-step reasoning and delegation.
+
+Sub-Agent Construction. Build the nodes for your graph: RetrieverNode, SchedulerNode, and TaskNode. Each node is a specialized LangChain agent using Gemini 1.5 Flash for speed and cost-efficiency.
+The Master Orchestrator. Build the LangGraph state machine. Define the conditional edges where the Gemini 1.5 Pro Orchestrator evaluates the user intent and routes to the correct sub-agent.
+
+Artifacts to refer : architecture.mermaid, prompt_library.md.
+
+Phase 5: The Command Center & Production Push
+Objective: Build the UI and connect the end-to-end flow.
+
+Streamlit Command Center. Build the UI using the frontend_ui_spec.md. Implement the "Trace Expander" so judges can see the decision_id and the multi-agent thought process in real-time.
+Integration. Connect the Streamlit frontend to the LangGraph Orchestrator via a protected API endpoint on Cloud Run.
+Full Stack Deployment. Use Cloud Build to deploy the updated services. Ensure environment variables (DB credentials, API keys) are secured in Secret Manager.
+
+Artifacts to refer: frontend_ui_spec.md.
+
+Phase 5: Chaos Engineering & Submission
+Objective: Validate the scenarios and capture the win.
+Scenario Stress Test. Execute the demo_scenarios.yaml. Use the UI’s Audit View to verify that RAG context is being injected and MCP tool calls are being logged correctly.
+PII & Error Handling. Final check on the pii_flag logic in the RAG retriever and ensuring the UI handles "Agent Offline" states gracefully.
+The "Sell". Record the demo. Start with the problem, show the "Agentic Decision" flow in the UI, and end with the successful multi-step task execution. Generate the README using the final code context.
+
+Artifacts Handy: demo_scenarios.yaml.

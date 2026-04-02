@@ -1,0 +1,56 @@
+%%{init: {'theme': 'dark'}}%%
+graph TD
+    %% Define Nodes and Map to Google Cloud Services %%
+    subgraph UserInterface [External Interface]
+        WebUI[Streamlit FrontEnd / Web API]
+    end
+
+    subgraph IntelligenceLayer [Intelligence & Routing (Vertex AI Gemini)]
+        Orchestrator[Primary Orchestrator Agent (Gemini 2.5 flash)]
+    end
+
+    subgraph ServiceLayer [Serverless Agents (Cloud Run)]
+        RAGAgent[RAG Retriever Agent]
+        ScheduleAgent[Scheduler Agent]
+        TaskAgent[Task Runner Agent]
+        NotifyAgent[Notifier Agent]
+    end
+
+    subgraph ToolIngress [MCP Gateway]
+        MCP_Hub[MCP Gateway & Tool API]
+    end
+
+    subgraph ExtTools [External APIs]
+        CalendarAPI[Calendar Service]
+        TaskDB[External Task DB]
+        NoteApp[External Notes App]
+    end
+
+    subgraph DataLayer [State & Knowledge]
+        PubSub[Pub/Sub Orchestration Bus]
+        AlloyDBAI[(AlloyDB AI - State & pgvector Embeddings)]
+    end
+
+    %% Define Connections & Protocol Flow %%
+    WebUI --"1. API Chat (REST/OIDC)"--> Orchestrator
+    
+    Orchestrator --"2a. Session Context"--> AlloyDBAI
+    Orchestrator --"2b. RAG Query"--> RAGAgent
+    
+    Orchestrator --"3. typed actions JSON"--> PubSub
+    
+    PubSub --"Subscribe"--> ScheduleAgent
+    PubSub --"Subscribe"--> TaskAgent
+    PubSub --"Subscribe"--> NotifyAgent
+
+    ScheduleAgent --"4a. MCP Call"--> MCP_Hub
+    TaskAgent --"4b. MCP Call"--> MCP_Hub
+    
+    RAGAgent --"Vectors/Metadata"--> AlloyDBAI
+    
+    MCP_Hub --"HTTPS"--> CalendarAPI
+    MCP_Hub --"HTTPS"--> TaskDB
+    MCP_Hub --"HTTPS"--> NoteApp
+
+    ScheduleAgent --"Results JSON"--> Orchestrator
+    TaskAgent --"Results JSON"--> Orchestrator

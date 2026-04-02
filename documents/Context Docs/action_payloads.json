@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TaskNinja Action Payload",
+  "type": "object",
+  "required": ["decision_id", "session_id", "audit_id", "actions"],
+  "properties": {
+    "decision_id": { "type": "string", "description": "Unique logic trace identifier." },
+    "session_id": { "type": "string" },
+    "audit_id": { "type": "string", "description": "Used for logs and traceability." },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "idempotency_key"],
+        "properties": {
+          "type": { "type": "string", "enum": ["query_rag", "schedule_meeting", "create_task", "send_notification"] },
+          "idempotency_key": { "type": "string" },
+          "payload": {
+            "type": "object",
+            "oneOf": [
+              {
+                "description": "RAG Query Payload",
+                "properties": {
+                  "query_text": { "type": "string" },
+                  "k": { "type": "integer", "default": 5 },
+                  "context_hints": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["query_text"]
+              },
+              {
+                "description": "Meeting Scheduling Payload",
+                "properties": {
+                  "start_time": { "type": "string", "format": "date-time" },
+                  "end_time": { "type": "string", "format": "date-time" },
+                  "participants": { "type": "array", "items": { "type": "string" } },
+                  "attached_docs": { 
+                    "type": "array", 
+                    "items": { "type": "string", "description": "UUID or GCS URI of documents to attach to invite." } 
+                  }
+                },
+                "required": ["start_time", "end_time"]
+              },
+              {
+                "description": "Multi-step Task Payload",
+                "properties": {
+                  "task_description": { "type": "string" },
+                  "attached_docs": { 
+                    "type": "array", 
+                    "items": { "type": "string", "description": "UUID of doc from documents table or GCS URI" } 
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "step_order": { "type": "integer" },
+                        "tool_call": { "type": "string", "enum": ["external_api_connector", "update_local_db"] },
+                        "parameters": { "type": "object" }
+                      }
+                    }
+                  }
+                },
+                "required": ["task_description", "steps"]
+              },
+              {
+                "description": "Notification Payload",
+                "properties": {
+                  "recipient": { "type": "string" },
+                  "channel": { "type": "string", "enum": ["email", "slack", "ui_toast"] },
+                  "message": { "type": "string" },
+                  "attached_docs": { 
+                    "type": "array", 
+                    "items": { "type": "string", "description": "URIs for files to include in notification." } 
+                  }
+                },
+                "required": ["recipient", "message"]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

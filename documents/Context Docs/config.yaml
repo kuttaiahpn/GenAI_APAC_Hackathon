@@ -1,0 +1,30 @@
+gcp_project_id: "track3codelabs"
+gcp_location: "us-central1"
+
+models:
+  # Used for primary reasoning, multi-step planning, and synthesising responses.
+  critical_planning: "gemini-2.5-flash"
+  # Used for routing, vector retrieval analysis, and simple summaries.
+  utility: "gemini-2.5-flash"
+  # Specific model if Vertex Retrieval APIs require a different endpoint.
+  vector_search: "text-embedding-004"
+
+policies:
+  temperature: 0.1 # High determinism requirement from PRD.
+  top_p: 1.0
+  max_retries: 3
+
+storage:
+  bucket_name: "taskninja-demo-docs-${PROJECT_ID}"
+  region: "us-central1"
+  allowed_file_types: ["pdf", "docx", "txt", "csv"]
+  # Used for generating "attachment" links in the UI
+  signed_url_expiration: 3600
+
+database:
+  host: "10.34.0.8"  # Replace with your AlloyDB Private IP
+  port: 5432
+  name: "postgres"   # Or the specific DB name you created
+  user: "postgres"
+  # Note: Never put the actual password in this file. 
+  # We will use environment variables for that.
