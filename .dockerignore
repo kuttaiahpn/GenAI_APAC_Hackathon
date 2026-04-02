@@ -1,0 +1,50 @@
+# Environments
+venv/
+backend/venv/
+env/
+.env
+
+# Frontend / JS Dependencies (from your gitignore updates)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+.next/
+out/
+.cache/
+
+# Custom / Temp
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.tmp
+*.bak
+.turbo/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS System Files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Git and Docker internals 
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+
+# Google Cloud & Documentation
+.gcloud/
+deployment_instructions.md
+documents/Context Docs/
