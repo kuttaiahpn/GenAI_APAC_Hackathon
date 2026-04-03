@@ -7,153 +7,162 @@ from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from google.cloud import pubsub_v1
 
-# Local dependencies ensuring proper typing execution
 from .state import AgentState
 from .nodes import retriever_node, scheduler_node, task_node, notify_node
 
 PROJECT_ID = "track3codelabs"
 TOPIC_ID = "taskninja-events"
 
-def get_master_prompt() -> str:
-    """Reads our core Intelligence logic constraints natively."""
-    try:
-        with open("documents/Context Docs/prompt_library.md", "r") as f:
-            return f.read()
-    except Exception:
-        return "You are a helpful multi-agent orchestrator. Output JSON matching the schema."
+ORCHESTRATOR_SYSTEM_PROMPT = """You are the TaskNinja Orchestrator, a planning engine for a multi-agent productivity system.
+
+Your job: Accept a user query and output a VALID JSON action payload. Nothing else.
+
+STRICT RULES:
+1. OUTPUT RAW JSON ONLY. No markdown, no commentary, no ```json blocks.
+2. Every action needs a unique "idempotency_key" (use a short UUID-like string).
+3. Pick the right action types from: "query_rag", "schedule_meeting", "create_task", "send_notification"
+
+AVAILABLE TOOLS:
+- query_rag: Search project documents. Payload: {"query_text": "...", "k": 5}
+- schedule_meeting: Book a meeting. Payload: {"start_time": "ISO8601", "end_time": "ISO8601", "participants": ["email"]}
+- create_task: Create a task. Payload: {"task_description": "...", "steps": [{"step_order": 1, "tool_call": "update_local_db", "parameters": {}}]}
+- send_notification: Send alert. Payload: {"recipient": "email", "channel": "ui_toast", "message": "..."}
+
+REQUIRED OUTPUT FORMAT:
+{"decision_id": "unique-id", "session_id": "session-id", "audit_id": "unique-id", "actions": [{"type": "action_type", "idempotency_key": "unique-key", "payload": {...}}]}
+
+If the user query is conversational (greeting, general question), return:
+{"decision_id": "unique-id", "session_id": "conversational", "audit_id": "unique-id", "actions": [{"type": "query_rag", "idempotency_key": "unique-key", "payload": {"query_text": "user's question rephrased for search", "k": 3}}]}
+"""
 
 async def master_orchestrator(state: AgentState) -> dict:
-    """
-    The Core brain. Reaches into Google Vertex AI Gemini 2.5 Flash.
-    Formats contextual state and instructs payload generation.
-    """
+    """The Master Orchestrator — uses Gemini to decompose user intent into action payloads."""
     llm = ChatVertexAI(model_name="gemini-2.5-flash", temperature=0.1)
-    sys_prompt = get_master_prompt()
     
-    # Map TypedDict directly to structured text context mapping
     user_q = state.get("user_query", "")
     session_summary = state.get("session_summary", "")
     rag = str(state.get("rag_context", []))
-    sched = str(state.get("schedule_context", []))
     tasks = str(state.get("active_tasks", []))
     
-    context_str = f"""
-    - USER QUERY: {user_q}
-    - CURRENT_SESSION_SUMMARY: {session_summary}
-    - RELEVANT_RAG_CONTEXT: {rag}
-    - CURRENT_SCHEDULE: {sched}
-    - RELEVANT_ACTIVE_TASKS: {tasks}
-    """
+    context_str = f"""USER QUERY: {user_q}
+SESSION_SUMMARY: {session_summary}
+RAG_CONTEXT: {rag}
+ACTIVE_TASKS: {tasks}"""
     
-    # Force invocation
     res = await llm.ainvoke([
-        SystemMessage(content=sys_prompt),
+        SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
         HumanMessage(content=context_str)
     ])
     
-    # Safely extract strictly generated JSON skipping markdown injection blocks
+    # Parse JSON robustly
     try:
-        raw_output = res.content.replace("```json", "").replace("```", "").strip()
-        actions_payload = json.loads(raw_output)
+        raw = res.content.strip()
+        # Strip markdown fences if LLM wraps them
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+        actions_payload = json.loads(raw)
     except Exception as e:
-        print(f"[Orchestrator] Warning: Fallback payload generation activated. Exception: {e}")
+        print(f"[Orchestrator] JSON parse failed: {e}. Raw: {res.content[:200]}", flush=True)
         actions_payload = {
             "decision_id": str(uuid.uuid4()),
             "session_id": "fallback",
             "audit_id": str(uuid.uuid4()),
-            "actions": []
+            "actions": [{
+                "type": "query_rag",
+                "idempotency_key": str(uuid.uuid4())[:8],
+                "payload": {"query_text": state.get("user_query", "help"), "k": 3}
+            }]
         }
         
-    # Append Metadata requirement
-    current_metadata = state.get("metadata", {"invoked_agents": []})
-    invoked = current_metadata.get("invoked_agents", [])
+    current_metadata = dict(state.get("metadata", {"invoked_agents": []}))
+    invoked = list(current_metadata.get("invoked_agents", []))
     invoked.append("master_orchestrator")
     current_metadata["invoked_agents"] = invoked
     
     return {"actions_payload": actions_payload, "metadata": current_metadata}
 
 def route_actions(state: AgentState) -> List[str]:
-    """
-    Reads the Master mapping instructions and fans-out dynamically to sub-agents.
-    LangGraph supports returning lists for native parallel conditional execution.
-    """
-    actions = state.get("actions_payload", {}).get("actions", [])
-    routes = []
+    """Routes to appropriate sub-agents based on the Orchestrator's action payload."""
+    actions_payload = state.get("actions_payload")
+    if actions_payload is None:
+        return ["ResponseNode"]
+    
+    actions = actions_payload.get("actions", [])
+    routes = set()
     
     for a in actions:
         action_type = a.get("type")
         if action_type == "query_rag":
-            routes.append("RetrieverNode")
+            routes.add("RetrieverNode")
         elif action_type == "schedule_meeting":
-            routes.append("SchedulerNode")
+            routes.add("SchedulerNode")
         elif action_type == "create_task":
-            routes.append("TaskNode")
+            routes.add("TaskNode")
         elif action_type == "send_notification":
-            routes.append("NotifyNode")
+            routes.add("NotifyNode")
             
-    # Remove duplicate invokes natively ensuring smooth traversal
-    unique_routes = list(set(routes))
-    
-    # If the LLM generated no explicit tool paths, we shortcut instantly to Telemetry
-    if not unique_routes:
-        return ["TelemetryNode"]
+    if not routes:
+        return ["ResponseNode"]
         
-    return unique_routes
+    return list(routes)
+
+async def response_node(state: AgentState) -> dict:
+    """Synthesizes all sub-agent outputs into a single conversational reply."""
+    llm = ChatVertexAI(model_name="gemini-2.5-flash", temperature=0.7)
+    
+    tool_results = "\n".join([
+        msg.content for msg in state.get("messages", []) 
+        if hasattr(msg, "content") and msg.content
+    ])
+    
+    if not tool_results.strip():
+        tool_results = "No sub-agents were invoked. The user asked a general question."
+    
+    final_res = await llm.ainvoke([
+        SystemMessage(content="You are TaskNinja, a friendly AI productivity assistant. Based on the sub-agent execution traces below, give the user a clear, concise summary of what was accomplished. If no tools ran, answer the user's question directly and helpfully."),
+        SystemMessage(content=f"Sub-Agent Traces:\n{tool_results}"),
+        HumanMessage(content=state.get("user_query", ""))
+    ])
+    
+    current_metadata = dict(state.get("metadata", {"invoked_agents": []}))
+    invoked = list(current_metadata.get("invoked_agents", []))
+    invoked.append("response_node")
+    current_metadata["invoked_agents"] = invoked
+    
+    return {"messages": [AIMessage(content=final_res.content)], "metadata": current_metadata}
 
 async def telemetry_node(state: AgentState) -> dict:
-    """
-    The final "Cloud Native" footprint mapping audit payloads across Google Pub/Sub seamlessly.
-    Doesn't interrupt core execution logic loop but secures final tracing natively!
-    """
+    """Publishes execution audit to Google Cloud Pub/Sub for observability."""
     try:
         publisher = pubsub_v1.PublisherClient()
         topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
         
         telemetry_payload = {
-            "decision_id": state.get("actions_payload", {}).get("decision_id", "unknown"),
-            "metadata_invocations": state.get("metadata", {}).get("invoked_agents", []),
-            "timestamp": str(datetime.datetime.now())
+            "decision_id": (state.get("actions_payload") or {}).get("decision_id", "unknown"),
+            "invoked_agents": (state.get("metadata") or {}).get("invoked_agents", []),
+            "timestamp": datetime.datetime.now().isoformat()
         }
         
-        data_str = json.dumps(telemetry_payload)
-        data = data_str.encode("utf-8")
-        
-        # Publish asynchronously natively
+        data = json.dumps(telemetry_payload).encode("utf-8")
         future = publisher.publish(topic_path, data)
-        # Attempt to wait for confirmation, skipping rapidly if environment lacks ADC context
-        future.result(timeout=2.0) 
-        
+        future.result(timeout=3.0)
+        print(f"[Telemetry] Published to {TOPIC_ID}", flush=True)
     except Exception as e:
-        print(f"[Telemetry Node] PubSub Execution Skipped gracefully. (Local Demo Expected). Reason: {e}")
+        print(f"[Telemetry] PubSub skipped: {e}", flush=True)
         
-    # Mark execution chain safely
-    current_metadata = state.get("metadata", {"invoked_agents": []})
-    current_metadata["invoked_agents"].append("telemetry_node")
+    current_metadata = dict(state.get("metadata", {"invoked_agents": []}))
+    invoked = list(current_metadata.get("invoked_agents", []))
+    invoked.append("telemetry_node")
+    current_metadata["invoked_agents"] = invoked
     return {"metadata": current_metadata}
 
-async def response_node(state: AgentState) -> dict:
-    """Consolidates tool output traces into a conversational AI reply for the user."""
-    llm = ChatVertexAI(model_name="gemini-2.5-flash", temperature=0.7)
-    
-    # Bundle the tool payload outputs from the messages array securely
-    tool_results = "\n".join([msg.content for msg in state.get("messages", []) if getattr(msg, "content", "")])
-    
-    final_res = await llm.ainvoke([
-        SystemMessage(content="You are TaskNinja. Summarize what you successfully completed to the user based on the tool trace logs below. Keep it friendly and concise."),
-        SystemMessage(content=f"Sub-Agent Traces: {tool_results}"),
-        HumanMessage(content=state.get("user_query", ""))
-    ])
-    
-    current_metadata = state.get("metadata", {"invoked_agents": []})
-    current_metadata["invoked_agents"].append("response_node")
-    
-    return {"messages": [AIMessage(content=final_res.content)], "metadata": current_metadata}
-
 def compile_swarm_graph():
-    """Compiles the primary TaskNinja Intelligence Graph binding orchestration tightly."""
+    """Compiles the TaskNinja LangGraph state machine."""
     graph = StateGraph(AgentState)
     
-    # Declare primary architecture components natively
     graph.add_node("MasterOrchestrator", master_orchestrator)
     graph.add_node("RetrieverNode", retriever_node)
     graph.add_node("SchedulerNode", scheduler_node)
@@ -162,26 +171,23 @@ def compile_swarm_graph():
     graph.add_node("ResponseNode", response_node)
     graph.add_node("TelemetryNode", telemetry_node)
     
-    # Anchor the start
     graph.add_edge(START, "MasterOrchestrator")
     
-    # Branching decision dynamically invoking Node routing fans
+    # Route to sub-agents OR directly to ResponseNode if no actions
     graph.add_conditional_edges(
         "MasterOrchestrator", 
         route_actions, 
-        ["RetrieverNode", "SchedulerNode", "TaskNode", "NotifyNode", "TelemetryNode"]
+        ["RetrieverNode", "SchedulerNode", "TaskNode", "NotifyNode", "ResponseNode"]
     )
     
-    # Enforce funnel bridging natively to the conversational text generator
+    # All sub-agents funnel into ResponseNode
     graph.add_edge("RetrieverNode", "ResponseNode")
     graph.add_edge("SchedulerNode", "ResponseNode")
     graph.add_edge("TaskNode", "ResponseNode")
     graph.add_edge("NotifyNode", "ResponseNode")
     
-    # Then route the finalized response payload trace over the PubSub loop ensuring traceability
+    # ResponseNode → Telemetry → END
     graph.add_edge("ResponseNode", "TelemetryNode")
-    
-    # Exhaust execution loop securely
     graph.add_edge("TelemetryNode", END)
     
     return graph.compile()

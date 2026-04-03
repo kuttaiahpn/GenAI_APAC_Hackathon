@@ -12,10 +12,10 @@ try:
     with open(CONFIG_PATH, 'r') as f:
         config_data = yaml.safe_load(f)
     db_config = config_data.get('database', {})
-    DB_USER = db_config.get('user', 'postgres')
-    DB_HOST = db_config.get('host', 'localhost').strip('[]')
-    DB_PORT = db_config.get('port', 5432)
-    DB_NAME = db_config.get('name', 'taskninja')
+    DB_USER = os.getenv("DB_USER", db_config.get('user', 'postgres'))
+    DB_HOST = os.getenv("DB_HOST", db_config.get('host', 'localhost').strip('[]'))
+    DB_PORT = int(os.getenv("DB_PORT", db_config.get('port', 5432)))
+    DB_NAME = os.getenv("DB_NAME", db_config.get('name', 'taskninja'))
 except Exception as e:
     print(f"Warning: Could not load config.yaml: {e}")
     DB_USER = "postgres"

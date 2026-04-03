@@ -35,9 +35,16 @@ async def run_init():
         print("Tables created: users, sessions, decisions, actions, audit_logs, documents, embeddings.")
         
     except Exception as e:
-        print(f"\n❌ [ERROR] Database initialization failed: {e}")
-        print("\nTip: Ensure you are running this from Google Cloud Shell and that your Cloud Shell ")
-        print("is authorized to reach the AlloyDB Private IP (10.34.0.8).")
+        import traceback
+        print(f"\n❌ [ERROR] Database initialization failed.")
+        print("-" * 40)
+        traceback.print_exc()
+        print("-" * 40)
+        print("\nPossible causes:")
+        print("1. Cloud Shell is NOT in your VPC (Default Cloud Shell is external).")
+        print("2. The AlloyDB Auth Proxy is not running.")
+        print("3. Firewall rules in your VPC are blocking port 5432.")
+        print("\nTip: Try running 'nc -zv 10.34.0.8 5432' to check connectivity first.")
         sys.exit(1)
 
 if __name__ == "__main__":
