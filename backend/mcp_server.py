@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from fastapi import FastAPI, Depends, Request, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +9,8 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 # Local Application Imports
-from .database import AsyncSessionFactory
+from .database import AsyncSessionFactory, engine, init_extensions
+from .models import Base
 from .tools import (
     RAGQueryInput, MeetingScheduleInput, CalendarFetchInput, 
     CreateTaskInput, NotificationInput, CreateDecisionLogInput,
@@ -17,8 +19,26 @@ from .tools import (
 )
 from .orchestrator import compile_swarm_graph
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initializes the database schema and pgvector extensions automatically on Cloud Run boot."""
+    try:
+        await init_extensions()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        print("Successfully initialized AlloyDB Schema and pgvector extensions.", flush=True)
+    except Exception as e:
+        print(f"Schema initialization warning: {e}", flush=True)
+    yield
+    # Cleanup logic (if any) could go here
+
 # Initialize FastAPI App
-app = FastAPI(title="TaskNinja MCP Gateway", version="1.0.0", description="Gateway servicing RESTful endpoints and MCP SSE integrations.")
+app = FastAPI(
+    title="TaskNinja MCP Gateway", 
+    version="1.0.0", 
+    description="Gateway servicing RESTful endpoints and MCP SSE integrations.",
+    lifespan=lifespan
+)
 
 API_KEY = os.getenv("API_KEY", "hackathon_default_key")
 
