@@ -7,3 +7,7 @@ pgvector
 google-cloud-aiplatform
 pyyaml
 mcp
+langgraph
+langchain-google-vertexai
+mcp[cli]
+google-cloud-pubsub

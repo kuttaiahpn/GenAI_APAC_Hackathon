@@ -1,5 +1,7 @@
 import json
-from fastapi import FastAPI, Depends, Request
+import os
+from pydantic import BaseModel
+from fastapi import FastAPI, Depends, Request, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 import mcp.server.sse
 from mcp.server import Server
@@ -13,9 +15,16 @@ from .tools import (
     query_rag_tool, schedule_meeting_tool, fetch_calendar_tool,
     create_task_tool, send_notification_tool, create_decision_log_tool
 )
+from .orchestrator import compile_swarm_graph
 
 # Initialize FastAPI App
 app = FastAPI(title="TaskNinja MCP Gateway", version="1.0.0", description="Gateway servicing RESTful endpoints and MCP SSE integrations.")
+
+API_KEY = os.getenv("API_KEY", "hackathon_default_key")
+
+async def verify_api_key(x_api_key: str = Header(...)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
 
 async def get_db():
     """Dependency injection to provide SQLAlchemy async sessions to our endpoints."""
@@ -49,6 +58,47 @@ async def post_send_notification(input_data: NotificationInput):
 @app.post("/v1/tools/create_decision_log")
 async def post_create_decision_log(input_data: CreateDecisionLogInput, db: AsyncSession = Depends(get_db)):
     return await create_decision_log_tool(input_data, db)
+
+# ==============================================================================
+# The Overarching Intelligence Bridge (Orchestrator Routing)
+# ==============================================================================
+
+class OrchestrateInput(BaseModel):
+    query: str
+    thread_id: str
+
+@app.post("/v1/orchestrate")
+async def post_orchestrate(payload: OrchestrateInput, authorized: bool = Depends(verify_api_key)):
+    """Triggers the Master LangGraph Swarm securely."""
+    graph = compile_swarm_graph()
+    
+    # LangGraph state configurations mapping conversational memory constraints
+    config = {"configurable": {"thread_id": payload.thread_id}}
+    
+    # Seed the initial architecture state cleanly
+    initial_state = {
+        "user_query": payload.query,
+        "messages": [],
+        "session_summary": "Active Sprint Session",
+        "rag_context": [],
+        "schedule_context": [],
+        "active_tasks": [],
+        "metadata": {"invoked_agents": []}
+    }
+    
+    # Fire the intelligence compilation natively yielding all intermediate routes sequentially
+    result = await graph.ainvoke(initial_state, config)
+    
+    msgs = result.get("messages", [])
+    final_message = msgs[-1].content if msgs else "Swarm completed execution loop without yielding final response traces."
+    
+    return {
+        "response": final_message,
+        "metadata": {
+            "decision_id": result.get("actions_payload", {}).get("decision_id", "unknown"),
+            "invoked_agents": result.get("metadata", {}).get("invoked_agents", [])
+        }
+    }
 
 # ==============================================================================
 # Model Context Protocol (MCP) Server Configuration (SSE Transport)
