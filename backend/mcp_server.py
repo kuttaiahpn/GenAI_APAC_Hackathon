@@ -6,8 +6,8 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 # Local Application Imports
-from database import AsyncSessionFactory
-from tools import (
+from .database import AsyncSessionFactory
+from .tools import (
     RAGQueryInput, MeetingScheduleInput, CalendarFetchInput, 
     CreateTaskInput, NotificationInput, CreateDecisionLogInput,
     query_rag_tool, schedule_meeting_tool, fetch_calendar_tool,

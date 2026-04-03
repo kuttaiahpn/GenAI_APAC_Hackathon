@@ -16,7 +16,9 @@ gcloud builds submit --tag gcr.io/track3codelabs/taskninja-mcp-gateway .
 *(Run this command directly in the same root folder containing `Dockerfile`)*
 
 ## 3. Deploy to Cloud Run & Bind to AlloyDB VPC
-This deployment command allocates backend endpoints, exposes Port 8080 exactly to the MCP Gateway, and links your local service to the specific VPC connector (`taskninja-v1`) so your Database configuration resolving to the `10.34.0.8` Internal IP completes natively. 
+This deployment command allocates backend endpoints and exposes Port 8080 exactly to the MCP Gateway. 
+
+Because AlloyDB uses a Private IP (10.34.0.8), your Cloud Run service must be deployed onto the same VPC network. We will use **Direct VPC Egress** (the modern replacement for VPC Connectors) to attach the service directly to your `default` network.
 
 ```bash
 gcloud run deploy taskninja-mcp-gateway \
@@ -24,10 +26,11 @@ gcloud run deploy taskninja-mcp-gateway \
   --region us-central1 \
   --platform managed \
   --allow-unauthenticated \
-  --vpc-connector taskninja-v1 \
+  --network default \
+  --subnet default \
   --vpc-egress private-ranges-only \
   --port 8080 \
-  --set-env-vars="DB_PASSWORD=your_real_alloydb_password"
+  --set-env-vars="DB_PASSWORD=changemelater"
 ```
 
 > **Note on `allow-unauthenticated`:** During hackathon demos, it's typically easiest to leave the endpoint public, allowing Streamlit and your orchestrator agent rapid ingress routing. Re-evaluate this binding with standard OIDC if placing in serious production!

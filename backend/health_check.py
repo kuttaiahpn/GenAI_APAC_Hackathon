@@ -5,8 +5,8 @@ from vertexai.language_models import TextEmbeddingModel
 from sqlalchemy import text
 
 # Import our local components
-from database import AsyncSessionFactory, engine
-from ingest import load_config
+from .database import AsyncSessionFactory, engine
+from .ingest import load_config
 
 async def check_db():
     print("[DB] Attempting to connect to the database...")

@@ -9,8 +9,8 @@ from vertexai.language_models import TextEmbeddingModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Imports from our local backend modules
-from database import AsyncSessionFactory, CONFIG_PATH
-from models import Document, Embedding
+from .database import AsyncSessionFactory, CONFIG_PATH
+from .models import Document, Embedding
 
 def load_config():
     try:

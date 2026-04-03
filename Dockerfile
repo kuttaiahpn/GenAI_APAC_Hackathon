@@ -11,7 +11,7 @@ RUN groupadd -r mcp && useradd -r -g mcp mcp
 
 WORKDIR /app
 
-# Install system dependencies required for psycopg/asyncpg or compilation if any
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
