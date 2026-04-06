@@ -29,7 +29,7 @@ DB_PASS = os.getenv("DB_PASSWORD", "password")
 # Default connection string, override this with AlloyDB credentials in production
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
-    f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?ssl=disable"
 )
 
 # Set up the async engine
@@ -52,3 +52,11 @@ async def init_extensions():
     async with engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector;'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
+
+def load_config():
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        print(f"Error loading config.yaml: {e}")
+        return {}

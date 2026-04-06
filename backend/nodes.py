@@ -8,10 +8,10 @@ from langchain_core.messages import SystemMessage, AIMessage
 
 from .state import AgentState
 
-# External Cloud Run URL — this proves true network-based Universal Tool Discovery
+# Gateway URL — can be local (http://localhost:8000/mcp/sse) or remote (Cloud Run)
 MCP_GATEWAY_URL = os.getenv(
     "MCP_GATEWAY_URL",
-    "https://taskninja-mcp-gateway-836906162288.us-central1.run.app/mcp/sse"
+    "http://127.0.0.1:8000/mcp/sse"  # Using 127.0.0.1 directly for speed/stability
 )
 
 async def execute_mcp_tool(tool_name: str, arguments: dict) -> str:
@@ -21,7 +21,8 @@ async def execute_mcp_tool(tool_name: str, arguments: dict) -> str:
     Includes timeout and error handling for production reliability.
     """
     try:
-        async with sse_client(MCP_GATEWAY_URL) as streams:
+        # Increased timeouts to 60s for RAG queries which involve LLM + DB ops
+        async with sse_client(MCP_GATEWAY_URL, timeout=60.0) as streams:
             async with ClientSession(streams[0], streams[1]) as session:
                 await session.initialize()
                 result = await session.call_tool(tool_name, arguments=arguments)
@@ -40,7 +41,7 @@ async def execute_mcp_tool(tool_name: str, arguments: dict) -> str:
 # -----------------------------------------------------------------------------------------
 
 def init_llm():
-    return ChatVertexAI(model_name="gemini-2.5-flash", temperature=0.3)
+    return ChatVertexAI(model_name="gemini-2.5-pro", temperature=0.3)
 
 async def retriever_node(state: AgentState) -> dict:
     """RAG Retriever Agent — queries document embeddings via MCP."""
@@ -59,10 +60,8 @@ async def retriever_node(state: AgentState) -> dict:
             "query_text": payload.get("query_text", "general knowledge retrieval"),
             "k": payload.get("k", 5)
         })
-        chat_res = await llm.ainvoke([
-            SystemMessage(content="You are the TaskNinja RAG Agent. Briefly summarize what you found from the knowledge base."),
-            SystemMessage(content=f"Search Results: {mcp_res}")
-        ])
+        combined_prompt = f"You are the TaskNinja RAG Agent. Briefly summarize what you found from the knowledge base.\n\nSearch Results: {mcp_res}"
+        chat_res = await llm.ainvoke(combined_prompt)
         responses.append(chat_res.content)
         
     current_metadata = dict(state.get("metadata", {}))
@@ -82,15 +81,22 @@ async def scheduler_node(state: AgentState) -> dict:
     if actions is None:
         actions = {}
     action_list = actions.get("actions", [])
-    schedule_actions = [a for a in action_list if a.get("type") == "schedule_meeting"]
     
-    for action in schedule_actions:
+    # Process both scheduling and fetching
+    calendar_actions = [a for a in action_list if a.get("type") in ["schedule_meeting", "fetch_calendar"]]
+    
+    for action in calendar_actions:
+        a_type = action.get("type")
         payload = action.get("payload", {})
-        mcp_res = await execute_mcp_tool("schedule_meeting", arguments=payload)
-        chat_res = await llm.ainvoke([
-            SystemMessage(content="You are the TaskNinja Scheduler Agent. Confirm the meeting was scheduled."),
-            SystemMessage(content=f"Scheduling Result: {mcp_res}")
-        ])
+        
+        mcp_res = await execute_mcp_tool(a_type, arguments=payload)
+        
+        prompt = f"Confirm the action '{a_type}' was handled."
+        if a_type == "fetch_calendar":
+            prompt = "The user asked for their schedule. Based on these events found in the database, provide a friendly summary."
+            
+        combined_prompt = f"You are the TaskNinja Scheduler Agent. {prompt}\n\nExecution Result: {mcp_res}"
+        chat_res = await llm.ainvoke(combined_prompt)
         responses.append(chat_res.content)
         
     current_metadata = dict(state.get("metadata", {}))
@@ -98,7 +104,7 @@ async def scheduler_node(state: AgentState) -> dict:
     invoked.append("scheduler_node")
     current_metadata["invoked_agents"] = invoked
 
-    summary = "; ".join(responses) if responses else "No meetings to schedule."
+    summary = "; ".join(responses) if responses else "No calendar actions needed."
     return {"metadata": current_metadata, "messages": [AIMessage(content=f"[Scheduler Agent] {summary}")]}
 
 async def task_node(state: AgentState) -> dict:
@@ -115,10 +121,8 @@ async def task_node(state: AgentState) -> dict:
     for action in task_actions:
         payload = action.get("payload", {})
         mcp_res = await execute_mcp_tool("create_task", arguments=payload)
-        chat_res = await llm.ainvoke([
-            SystemMessage(content="You are the TaskNinja Task Agent. Confirm the task was queued."),
-            SystemMessage(content=f"Task Result: {mcp_res}")
-        ])
+        combined_prompt = f"You are the TaskNinja Task Agent. Confirm the task was queued.\n\nTask Result: {mcp_res}"
+        chat_res = await llm.ainvoke(combined_prompt)
         responses.append(chat_res.content)
         
     current_metadata = dict(state.get("metadata", {}))
@@ -130,7 +134,7 @@ async def task_node(state: AgentState) -> dict:
     return {"metadata": current_metadata, "messages": [AIMessage(content=f"[Task Agent] {summary}")]}
 
 async def notify_node(state: AgentState) -> dict:
-    """Notifier Agent — dispatches alerts via MCP."""
+    """Notify Agent — dispatches and retrieves alerts via MCP."""
     llm = init_llm()
     responses = []
     
@@ -138,15 +142,21 @@ async def notify_node(state: AgentState) -> dict:
     if actions is None:
         actions = {}
     action_list = actions.get("actions", [])
-    notify_actions = [a for a in action_list if a.get("type") == "send_notification"]
+    
+    notify_actions = [a for a in action_list if a.get("type") in ["send_notification", "fetch_notifications"]]
     
     for action in notify_actions:
+        a_type = action.get("type")
         payload = action.get("payload", {})
-        mcp_res = await execute_mcp_tool("send_notification", arguments=payload)
-        chat_res = await llm.ainvoke([
-            SystemMessage(content="You are the TaskNinja Notifier Agent. Confirm notification delivery."),
-            SystemMessage(content=f"Notification Result: {mcp_res}")
-        ])
+        
+        mcp_res = await execute_mcp_tool(a_type, arguments=payload)
+        
+        prompt = f"Confirm the action '{a_type}' was completed."
+        if a_type == "fetch_notifications":
+            prompt = "The user is checking for alerts. Based on these database records, list their unread notifications clearly."
+            
+        combined_prompt = f"You are the TaskNinja Notifier Agent. {prompt}\n\nExecution Result: {mcp_res}"
+        chat_res = await llm.ainvoke(combined_prompt)
         responses.append(chat_res.content)
         
     current_metadata = dict(state.get("metadata", {}))
@@ -154,5 +164,5 @@ async def notify_node(state: AgentState) -> dict:
     invoked.append("notify_node")
     current_metadata["invoked_agents"] = invoked
 
-    summary = "; ".join(responses) if responses else "No notifications to send."
+    summary = "; ".join(responses) if responses else "No notifications handled."
     return {"metadata": current_metadata, "messages": [AIMessage(content=f"[Notify Agent] {summary}")]}

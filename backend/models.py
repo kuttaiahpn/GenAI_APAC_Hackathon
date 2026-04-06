@@ -97,6 +97,27 @@ class Embedding(Base):
 
     document = relationship("Document")
 
+class CalendarEvent(Base):
+    __tablename__ = 'calendar_events'
+
+    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    summary = Column(Text, nullable=False)
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+    participants = Column(JSONB) # List of emails
+    attached_docs = Column(JSONB) # List of GCS URIs or Doc IDs
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+class Notification(Base):
+    __tablename__ = 'notifications'
+
+    notification_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    recipient = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    channel = Column(String(50), default='ui_toast')
+    status = Column(String(20), default='unread')
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
 class RetrievalCache(Base):
     __tablename__ = 'retrieval_cache'
 

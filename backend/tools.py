@@ -4,6 +4,12 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+import vertexai
+from vertexai.language_models import TextEmbeddingModel
+
+# Local Imports
+from .database import load_config
+from .models import Action, Decision, CalendarEvent, Document, Notification
 
 # ==============================================================================
 # Pydantic Schemas - Strict Input/Output definitions for 100% accurate Function Calling
@@ -15,6 +21,7 @@ class RAGQueryInput(BaseModel):
     context_hints: Optional[List[str]] = Field(None, description="Optional keywords or filters to narrow down the search space.")
 
 class MeetingScheduleInput(BaseModel):
+    summary: str = Field(..., description="The subject or summary of the meeting.")
     start_time: datetime = Field(..., description="Start time of the meeting in ISO 8601 format.")
     end_time: datetime = Field(..., description="End time of the meeting in ISO 8601 format.")
     participants: List[str] = Field(..., description="List of participant email addresses.")
@@ -25,10 +32,13 @@ class CalendarFetchInput(BaseModel):
     time_max: datetime = Field(..., description="Upper bound for fetching events.")
 
 class NotificationInput(BaseModel):
-    recipient: str = Field(..., description="Email or slack handle of the recipient.")
-    channel: Literal["email", "slack", "ui_toast"] = Field(..., description="The communication channel.")
-    message: str = Field(..., description="The exact message to send.")
-    attached_docs: Optional[List[str]] = Field(None, description="URIs for files to include in notification.")
+    recipient: str = Field(..., description="Email or User ID of the recipient.")
+    message: str = Field(..., description="The content of the notification alert.")
+    channel: str = Field("ui_toast", description="Delivery channel: ui_toast, email, or slack.")
+
+class NotificationFetchInput(BaseModel):
+    recipient: str = Field(..., description="Email or User ID to fetch notifications for.")
+    status: str = Field("unread", description="Status filter: unread or read.")
 
 class TaskStep(BaseModel):
     step_order: int
@@ -56,54 +66,188 @@ async def query_rag_tool(input_data: RAGQueryInput, db: AsyncSession) -> dict:
     Executes a vector similarity search across the Document Embeddings database.
     This acts as the agent's memory retrieval mechanism.
     """
-    # Logic is wired to AI Platform embeddings in ingest.py, here we'd trigger the RAG query.
-    # We return dummy data fulfilling the API contract wrapper for the MCP hub.
-    return {
-        "status": "success", 
-        "documents_retrieved": input_data.k,
-        "query": input_data.query_text,
-        "data": [{"doc_id": str(uuid.uuid4()), "content": f"Simulated RAG hit for: {input_data.query_text}"}]
-    }
+    config = load_config()
+    project_id = config.get("gcp_project_id", "track3codelabs")
+    location = config.get("gcp_location", "us-central1")
+    
+    # Initialize Vertex AI
+    vertexai.init(project=project_id, location=location)
+    model_name = config.get("models", {}).get("vector_search", "text-embedding-004")
+    model = TextEmbeddingModel.from_pretrained(model_name)
+    
+    # Generate Embedding for the query
+    # We use batch size 1 for a single query
+    embedding_res = model.get_embeddings([input_data.query_text], output_dimensionality=768)
+    query_vector = embedding_res[0].values
 
-async def schedule_meeting_tool(input_data: MeetingScheduleInput) -> dict:
-    """
-    Provisions a new meeting block on the Calendar API.
-    """
-    return {
-        "status": "success",
-        "action": "meeting_created",
-        "start": input_data.start_time.isoformat(),
-        "participants_invited": len(input_data.participants)
-    }
+    # Vector similarity search using pgvector (cosine distance <=> )
+    # Ordering by distance ascending (smaller is more similar)
+    sql = text("""
+        SELECT text_chunk, 1 - (embedding <=> :query_vector) AS similarity
+        FROM embeddings
+        ORDER BY embedding <=> :query_vector
+        LIMIT :k
+    """)
+    
+    try:
+        # We convert the list to a string format '[v1, v2, ...]' for pgvector raw SQL compatibility
+        result = await db.execute(sql, {"query_vector": str(query_vector), "k": input_data.k})
+        rows = result.fetchall()
+        
+        documents = [
+            {"content": row[0], "similarity": float(row[1])}
+            for row in rows
+        ]
+        
+        return {
+            "status": "success", 
+            "documents_retrieved": len(documents),
+            "query": input_data.query_text,
+            "data": documents
+        }
+    except Exception as e:
+        print(f"RAG Tool Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "query": input_data.query_text
+        }
 
-async def fetch_calendar_tool(input_data: CalendarFetchInput) -> dict:
+async def schedule_meeting_tool(input_data: MeetingScheduleInput, db: AsyncSession) -> dict:
     """
-    Pulls existing calendar slots for awareness.
+    Provisions a new meeting block on the Calendar API and persists to AlloyDB.
     """
-    return {
-        "status": "success",
-        "events": []
-    }
+    try:
+        new_event = CalendarEvent(
+            summary=input_data.summary,
+            start_time=input_data.start_time,
+            end_time=input_data.end_time,
+            participants=list(input_data.participants),
+            attached_docs=list(input_data.attached_docs or [])
+        )
+        db.add(new_event)
+        await db.commit()
+        await db.refresh(new_event)
+        
+        return {
+            "status": "success",
+            "action": "meeting_created",
+            "event_id": str(new_event.event_id),
+            "summary": new_event.summary,
+            "start": new_event.start_time.isoformat(),
+            "attached_docs": new_event.attached_docs
+        }
+    except Exception as e:
+        print(f"Schedule Meeting Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+async def fetch_calendar_tool(input_data: CalendarFetchInput, db: AsyncSession) -> dict:
+    """
+    Pulls existing calendar slots for awareness from AlloyDB.
+    """
+    from sqlalchemy import select
+    try:
+        stmt = select(CalendarEvent).where(
+            CalendarEvent.start_time >= input_data.time_min,
+            CalendarEvent.start_time <= input_data.time_max
+        )
+        result = await db.execute(stmt)
+        events = result.scalars().all()
+        
+        return {
+            "status": "success",
+            "events": [
+                {
+                    "summary": e.summary,
+                    "start": e.start_time.isoformat(),
+                    "end": e.end_time.isoformat(),
+                    "participants": e.participants,
+                    "attached_docs": e.attached_docs
+                } for e in events
+            ]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 async def create_task_tool(input_data: CreateTaskInput, db: AsyncSession) -> dict:
     """
     Queues a complex, multi-step sub-agent execution flow into the Action tables.
     """
-    return {
-        "status": "success",
-        "task_queued": input_data.task_description,
-        "total_steps": len(input_data.steps)
-    }
+    try:
+        # We model 'tasks' as Actions in this system for now
+        new_action = Action(
+            type="create_task",
+            agent="task_runner",
+            payload={
+                "task_description": input_data.task_description,
+                "steps": [s.model_dump() for s in input_data.steps],
+                "attached_docs": input_data.attached_docs
+            },
+            idempotency_key=str(uuid.uuid4())[:8]
+        )
+        db.add(new_action)
+        await db.commit()
+        await db.refresh(new_action)
+        
+        return {
+            "status": "success",
+            "task_id": str(new_action.action_id),
+            "task_queued": input_data.task_description,
+            "total_steps": len(input_data.steps)
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
-async def send_notification_tool(input_data: NotificationInput) -> dict:
+async def send_notification_tool(input_data: NotificationInput, db: AsyncSession) -> dict:
     """
-    Dispatches targeted alerts across configured channels (email, slack, ui_toast).
+    Dispatches targeted alerts via the Notification table in AlloyDB.
     """
-    return {
-        "status": "success",
-        "notified": input_data.recipient,
-        "via": input_data.channel
-    }
+    try:
+        new_note = Notification(
+            recipient=input_data.recipient,
+            message=input_data.message,
+            channel=input_data.channel
+        )
+        db.add(new_note)
+        await db.commit()
+        await db.refresh(new_note)
+        
+        return {
+            "status": "success",
+            "notification_id": str(new_note.notification_id),
+            "recipient": new_note.recipient,
+            "channel": new_note.channel
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+async def fetch_notifications_tool(input_data: NotificationFetchInput, db: AsyncSession) -> dict:
+    """
+    Retrieves unread alerts for the user interface from AlloyDB.
+    """
+    from sqlalchemy import select
+    try:
+        stmt = select(Notification).where(
+            Notification.recipient == input_data.recipient,
+            Notification.status == input_data.status
+        ).order_by(Notification.created_at.desc())
+        
+        result = await db.execute(stmt)
+        notes = result.scalars().all()
+        
+        return {
+            "status": "success",
+            "notifications": [
+                {
+                    "notification_id": str(n.notification_id),
+                    "message": n.message,
+                    "channel": n.channel,
+                    "created_at": n.created_at.isoformat()
+                } for n in notes
+            ]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 async def create_decision_log_tool(input_data: CreateDecisionLogInput, db: AsyncSession) -> dict:
     """

@@ -11,4 +11,5 @@ langgraph
 langchain-core
 langchain-google-vertexai
 google-cloud-pubsub
+google-cloud-storage
 httpx

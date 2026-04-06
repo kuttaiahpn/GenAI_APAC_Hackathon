@@ -58,7 +58,21 @@ if "tasks" not in st.session_state:
     ]
 
 API_KEY = os.getenv("API_KEY", "hackathon_default_key")
-BACKEND_URL = os.getenv("BACKEND_URL", "https://taskninja-mcp-gateway-836906162288.us-central1.run.app")
+
+# Auto-detect Local vs Cloud Run
+def get_backend_url():
+    # If explicitly set in ENV, use that (for Cloud Run)
+    env_url = os.getenv("BACKEND_URL")
+    if env_url: return env_url
+    
+    # Otherwise, try local Gateway
+    try:
+        requests.get("http://127.0.0.1:8000/", timeout=1)
+        return "http://127.0.0.1:8000"
+    except:
+        return "https://taskninja-mcp-gateway-836906162288.us-central1.run.app"
+
+BACKEND_URL = get_backend_url()
 
 # ═══════════════════════════════════════════════════════════════
 # LOGIN SCREEN
@@ -86,6 +100,7 @@ with st.sidebar:
     NAV_PAGES = {
         "dashboard": "🏠 Dashboard",
         "chat": "💬 Swarm Chat",
+        "vault": "📤 Document Vault",
         "tasks": "📋 Task Manager",
         "calendar": "📅 Calendar",
         "audit": "🛡️ Audit Hub"
@@ -98,10 +113,14 @@ with st.sidebar:
     )
     
     st.markdown("---")
-    st.caption(f"Thread: `{st.session_state.thread_id[:8]}`")
-    if st.button("🚪 Logout"):
-        st.session_state.authenticated = False
+    st.markdown("🟢 **System Pulse: Active**")
+    st.caption(f"Backend: `{BACKEND_URL}`")
+    
+    if st.button("🔄 Refresh Data"):
         st.rerun()
+        
+    st.markdown("---")
+    st.caption(f"Thread: `{st.session_state.thread_id[:8]}`")
 
 # ═══════════════════════════════════════════════════════════════
 # TOP BAR (Main Area)
@@ -120,17 +139,36 @@ st.markdown(f"""
 # PAGE: DASHBOARD
 # ═══════════════════════════════════════════════════════════════
 if page_key == "dashboard":
+    # Fetch Live Stats with Auth
+    try:
+        headers = {"X-API-Key": API_KEY}
+        stats_res = requests.get(f"{BACKEND_URL}/v1/stats", headers=headers, timeout=5).json()
+    except:
+        stats_res = {"documents": 0, "tasks": 0, "events": 0}
+
     m1, m2, m3 = st.columns(3)
     with m1:
-        st.markdown('<div class="metric-card"><h3>Active Agents</h3><div class="num">4</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><h3>Live Docs</h3><div class="num">{stats_res["documents"]}</div></div>', unsafe_allow_html=True)
     with m2:
-        st.markdown('<div class="metric-card"><h3>Pending Tasks</h3><div class="num">3</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><h3>Active Tasks</h3><div class="num">{stats_res["tasks"]}</div></div>', unsafe_allow_html=True)
     with m3:
-        st.markdown('<div class="metric-card"><h3>Search Context</h3><div class="num">Vector</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><h3>Calendar</h3><div class="num">{stats_res["events"]}</div></div>', unsafe_allow_html=True)
     
     st.divider()
-    st.subheader("🚀 Getting Started")
-    st.info("Navigate to the **💬 Swarm Chat** page to interact with the Agents using natural language.")
+    
+    # Notifications Bell with Auth
+    st.subheader("🔔 Recent Notifications (ali@example.com)")
+    try:
+        headers = {"X-API-Key": API_KEY}
+        notes = requests.get(f"{BACKEND_URL}/v1/notifications/list?recipient=ali@example.com", headers=headers, timeout=5).json()
+        if notes.get("notifications"):
+            for n in notes["notifications"][:3]:
+                st.toast(f"New Alert: {n['message']}")
+                st.warning(f"**{n['message']}**  \n*Channel: {n['channel']} | {n['created_at'][:16]}*")
+        else:
+            st.write("No new alerts.")
+    except:
+        st.write("Notification service unreachable.")
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE: CHAT (The Core Feature)
@@ -144,8 +182,9 @@ elif page_key == "chat":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("meta"):
-                with st.expander("🔍 Swarm Trace Details"):
-                    st.json(msg["meta"])
+                agents = msg["meta"].get("invoked_agents", [])
+                if agents:
+                    st.caption(f"🧠 **Swarm Trace:** {' ➔ '.join(agents)}")
 
     # Chat Input
     if prompt := st.chat_input("Tell TaskNinja what to do..."):
@@ -179,23 +218,95 @@ elif page_key == "chat":
                     status.update(label="❌ Failed", state="error")
 
 # ═══════════════════════════════════════════════════════════════
+# PAGE: DOCUMENT VAULT (Uploaded + Ingestion)
+# ═══════════════════════════════════════════════════════════════
+elif page_key == "vault":
+    st.write("### 📤 Document Vault")
+    st.markdown("Upload project documents to expand the Swarm's knowledge base. Supporters `.txt` and `.md` files.")
+    
+    uploaded_files = st.file_uploader(
+        "Select files to ingest (Max 5)", 
+        accept_multiple_files=True,
+        type=["txt", "md"]
+    )
+    
+    if uploaded_files:
+        if st.button("🚀 Start Ingestion", use_container_width=True, type="primary"):
+            if len(uploaded_files) > 5:
+                st.error("Please select a maximum of 5 files.")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for idx, file in enumerate(uploaded_files):
+                    status_text.text(f"Processing: {file.name}...")
+                    try:
+                        # Prepare multipart upload
+                        files = [('files', (file.name, file.getvalue(), file.type))]
+                        headers = {"X-API-Key": API_KEY}
+                        
+                        resp = requests.post(
+                            f"{BACKEND_URL}/v1/upload",
+                            files=files,
+                            headers=headers,
+                            timeout=60
+                        )
+                        resp.raise_for_status()
+                        st.success(f"✅ Ingested: {file.name}")
+                    except Exception as e:
+                        st.error(f"❌ Failed: {file.name} ({e})")
+                    
+                    # Update progress
+                    progress_bar.progress((idx + 1) / len(uploaded_files))
+                
+                status_text.text("Ingestion process complete!")
+                st.balloons()
+
+# ═══════════════════════════════════════════════════════════════
 # PAGE: TASKS
 # ═══════════════════════════════════════════════════════════════
 elif page_key == "tasks":
-    st.write("### task-ninja-queue")
-    for task in st.session_state.tasks:
-        with st.expander(f"{task['title']} [{task['status']}]"):
-            st.write(f"Due: {task['due']}")
-            if st.button("Mark Completed", key=f"btn_{task['id']}"):
-                task["status"] = "Completed"
-                st.info("Update synchronized.")
+    st.write("### 📋 Active Swarm Tasks")
+    try:
+        headers = {"X-API-Key": API_KEY}
+        tasks_res = requests.get(f"{BACKEND_URL}/v1/tasks/list", headers=headers, timeout=5).json()
+        if not tasks_res:
+            st.info("No active tasks found. Use the Chat to create one!")
+        else:
+            for t in tasks_res:
+                desc = t["payload"].get("task_description", "Untitled Task")
+                status = t.get("status", "pending")
+                with st.expander(f"{desc} [_{status}_]"):
+                    st.write(f"**ID:** `{t['id']}`")
+                    st.write(f"**Created:** {t['created_at'][:16]}")
+                    steps = t["payload"].get("steps", [])
+                    if steps:
+                        st.markdown("**Execution Plan:**")
+                        for s in steps:
+                            st.write(f"- {s['tool_call']}")
+    except:
+        st.error("Failed to fetch tasks from backend.")
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE: CALENDAR (Stub)
 # ═══════════════════════════════════════════════════════════════
 elif page_key == "calendar":
-    st.write("### Swarm Calendar View")
-    st.info("The Calendar Agent can be triggered via the Chat page by asking to schedule meetings.")
+    st.write("### 📅 Swarm Calendar")
+    try:
+        headers = {"X-API-Key": API_KEY}
+        cal_res = requests.get(f"{BACKEND_URL}/v1/calendar/list", headers=headers, timeout=5).json()
+        if not cal_res:
+            st.info("No upcoming meetings found.")
+        else:
+            for e in cal_res:
+                start = e["start"][:16].replace("T", " ")
+                with st.container(border=True):
+                    st.markdown(f"#### {e['summary']}")
+                    st.markdown(f"🕘 **Time:** {start}")
+                    if e.get("attached_docs"):
+                        st.caption(f"📎 **Attached:** {', '.join(e['attached_docs'])}")
+    except:
+        st.error("Failed to fetch calendar from backend.")
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE: AUDIT

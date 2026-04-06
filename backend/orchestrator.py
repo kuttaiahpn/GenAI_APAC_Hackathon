@@ -24,35 +24,39 @@ STRICT RULES:
 
 AVAILABLE TOOLS:
 - query_rag: Search project documents. Payload: {"query_text": "...", "k": 5}
-- schedule_meeting: Book a meeting. Payload: {"start_time": "ISO8601", "end_time": "ISO8601", "participants": ["email"]}
-- create_task: Create a task. Payload: {"task_description": "...", "steps": [{"step_order": 1, "tool_call": "update_local_db", "parameters": {}}]}
-- send_notification: Send alert. Payload: {"recipient": "email", "channel": "ui_toast", "message": "..."}
+- schedule_meeting: Book a meeting. Payload: {"summary": "...", "start_time": "ISO8601", "end_time": "ISO8601", "participants": ["email"], "attached_docs": ["GCS_URI"]}
+- fetch_calendar: Check schedule. Payload: {"time_min": "ISO8601", "time_max": "ISO8601"}
+- create_task: Create a task. Payload: {"task_description": "...", "steps": [{"step_order": 1, "tool_call": "update_local_db", "parameters": {}}], "attached_docs": ["GCS_URI"]}
+- send_notification: Send alert. Payload: {"recipient": "email or user_id", "message": "...", "channel": "ui_toast"}
+- fetch_notifications: Check for alerts. Payload: {"recipient": "email or user_id", "status": "unread"}
 
 REQUIRED OUTPUT FORMAT:
 {"decision_id": "unique-id", "session_id": "session-id", "audit_id": "unique-id", "actions": [{"type": "action_type", "idempotency_key": "unique-key", "payload": {...}}]}
 
 If the user query is conversational (greeting, general question), return:
 {"decision_id": "unique-id", "session_id": "conversational", "audit_id": "unique-id", "actions": [{"type": "query_rag", "idempotency_key": "unique-key", "payload": {"query_text": "user's question rephrased for search", "k": 3}}]}
+
+IMPORTANT: Use the CURRENT_TIME provided in the context for all relative date calculations (e.g., 'tomorrow', 'next Friday').
 """
 
 async def master_orchestrator(state: AgentState) -> dict:
     """The Master Orchestrator — uses Gemini to decompose user intent into action payloads."""
-    llm = ChatVertexAI(model_name="gemini-2.5-flash", temperature=0.1)
+    llm = ChatVertexAI(model_name="gemini-2.5-pro", temperature=0.1)
     
     user_q = state.get("user_query", "")
     session_summary = state.get("session_summary", "")
     rag = str(state.get("rag_context", []))
     tasks = str(state.get("active_tasks", []))
     
-    context_str = f"""USER QUERY: {user_q}
+    context_str = f"""CURRENT_TIME: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+USER QUERY: {user_q}
 SESSION_SUMMARY: {session_summary}
 RAG_CONTEXT: {rag}
 ACTIVE_TASKS: {tasks}"""
     
-    res = await llm.ainvoke([
-        SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
-        HumanMessage(content=context_str)
-    ])
+    combined_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\nCONTEXT:\n{context_str}"
+    
+    res = await llm.ainvoke(combined_prompt)
     
     # Parse JSON robustly
     try:
@@ -97,11 +101,11 @@ def route_actions(state: AgentState) -> List[str]:
         action_type = a.get("type")
         if action_type == "query_rag":
             routes.add("RetrieverNode")
-        elif action_type == "schedule_meeting":
+        elif action_type == "schedule_meeting" or action_type == "fetch_calendar":
             routes.add("SchedulerNode")
         elif action_type == "create_task":
             routes.add("TaskNode")
-        elif action_type == "send_notification":
+        elif action_type == "send_notification" or action_type == "fetch_notifications":
             routes.add("NotifyNode")
             
     if not routes:
@@ -111,7 +115,7 @@ def route_actions(state: AgentState) -> List[str]:
 
 async def response_node(state: AgentState) -> dict:
     """Synthesizes all sub-agent outputs into a single conversational reply."""
-    llm = ChatVertexAI(model_name="gemini-2.5-flash", temperature=0.7)
+    llm = ChatVertexAI(model_name="gemini-2.5-pro", temperature=0.7)
     
     tool_results = "\n".join([
         msg.content for msg in state.get("messages", []) 
@@ -121,11 +125,9 @@ async def response_node(state: AgentState) -> dict:
     if not tool_results.strip():
         tool_results = "No sub-agents were invoked. The user asked a general question."
     
-    final_res = await llm.ainvoke([
-        SystemMessage(content="You are TaskNinja, a friendly AI productivity assistant. Based on the sub-agent execution traces below, give the user a clear, concise summary of what was accomplished. If no tools ran, answer the user's question directly and helpfully."),
-        SystemMessage(content=f"Sub-Agent Traces:\n{tool_results}"),
-        HumanMessage(content=state.get("user_query", ""))
-    ])
+    combined_prompt = f"You are TaskNinja, a friendly AI productivity assistant. Based on the sub-agent execution traces below, give the user a clear, concise summary of what was accomplished. If no tools ran, answer the user's question directly and helpfully.\n\nSub-Agent Traces:\n{tool_results}\n\nUSER QUESTION: {state.get('user_query', '')}"
+    
+    final_res = await llm.ainvoke(combined_prompt)
     
     current_metadata = dict(state.get("metadata", {"invoked_agents": []}))
     invoked = list(current_metadata.get("invoked_agents", []))

@@ -2,7 +2,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from fastapi import FastAPI, Depends, Request, Header, HTTPException
+from fastapi import FastAPI, Depends, Request, Header, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 import mcp.server.sse
 from mcp.server import Server
@@ -13,11 +13,13 @@ from .database import AsyncSessionFactory, engine, init_extensions
 from .models import Base
 from .tools import (
     RAGQueryInput, MeetingScheduleInput, CalendarFetchInput, 
-    CreateTaskInput, NotificationInput, CreateDecisionLogInput,
+    CreateTaskInput, NotificationInput, NotificationFetchInput, CreateDecisionLogInput,
     query_rag_tool, schedule_meeting_tool, fetch_calendar_tool,
-    create_task_tool, send_notification_tool, create_decision_log_tool
+    create_task_tool, send_notification_tool, fetch_notifications_tool, create_decision_log_tool
 )
 from .orchestrator import compile_swarm_graph
+from .ingest import ingest_document
+import uuid
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,24 +62,107 @@ async def post_query_rag(input_data: RAGQueryInput, db: AsyncSession = Depends(g
     return await query_rag_tool(input_data, db)
 
 @app.post("/v1/tools/schedule_meeting")
-async def post_schedule_meeting(input_data: MeetingScheduleInput):
-    return await schedule_meeting_tool(input_data)
+async def post_schedule_meeting(input_data: MeetingScheduleInput, db: AsyncSession = Depends(get_db)):
+    return await schedule_meeting_tool(input_data, db)
 
 @app.post("/v1/tools/fetch_calendar")
-async def post_fetch_calendar(input_data: CalendarFetchInput):
-    return await fetch_calendar_tool(input_data)
+async def post_fetch_calendar(input_data: CalendarFetchInput, db: AsyncSession = Depends(get_db)):
+    return await fetch_calendar_tool(input_data, db)
 
 @app.post("/v1/tools/create_task")
 async def post_create_task(input_data: CreateTaskInput, db: AsyncSession = Depends(get_db)):
     return await create_task_tool(input_data, db)
 
 @app.post("/v1/tools/send_notification")
-async def post_send_notification(input_data: NotificationInput):
-    return await send_notification_tool(input_data)
+async def post_send_notification(input_data: NotificationInput, db: AsyncSession = Depends(get_db)):
+    return await send_notification_tool(input_data, db)
+
+@app.post("/v1/tools/fetch_notifications")
+async def post_fetch_notifications(input_data: NotificationFetchInput, db: AsyncSession = Depends(get_db)):
+    return await fetch_notifications_tool(input_data, db)
 
 @app.post("/v1/tools/create_decision_log")
 async def post_create_decision_log(input_data: CreateDecisionLogInput, db: AsyncSession = Depends(get_db)):
     return await create_decision_log_tool(input_data, db)
+
+@app.post("/v1/upload")
+async def post_upload_documents(
+    files: list[UploadFile] = File(...), 
+    db: AsyncSession = Depends(get_db)
+):
+    """Multipart upload for files; extracts text and triggers RAG ingestion."""
+    results = []
+    
+    # Static demo user ID
+    JUDGE_USER_ID = uuid.UUID("771ce1ff-b0ed-4246-ba3b-dca00665c138")
+    
+    for file in files:
+        try:
+            content = await file.read()
+            raw_text = content.decode("utf-8")
+            
+            doc_id = await ingest_document(
+                db=db,
+                raw_text=raw_text,
+                user_id=JUDGE_USER_ID,
+                title=file.filename
+            )
+            results.append({"filename": file.filename, "doc_id": str(doc_id)})
+        except Exception as e:
+            results.append({"filename": file.filename, "error": str(e)})
+            
+    return {"status": "success", "results": results}
+
+# --- New Frontend Integration Endpoints ---
+
+@app.get("/v1/stats")
+async def get_stats(db: AsyncSession = Depends(get_db)):
+    """Dashboard metrics: Counts of Docs, Tasks, and Events."""
+    from sqlalchemy import select, func
+    from .models import Document, Action, CalendarEvent
+    
+    doc_count = await db.scalar(select(func.count(Document.doc_id)))
+    task_count = await db.scalar(select(func.count(Action.action_id)).where(Action.type == "create_task"))
+    event_count = await db.scalar(select(func.count(CalendarEvent.event_id)))
+    
+    return {
+        "documents": doc_count or 0,
+        "tasks": task_count or 0,
+        "events": event_count or 0
+    }
+
+@app.get("/v1/notifications/list")
+async def get_notifications(recipient: str, db: AsyncSession = Depends(get_db)):
+    """GET wrapper for notification fetching."""
+    from .tools import fetch_notifications_tool, NotificationFetchInput
+    payload = NotificationFetchInput(recipient=recipient, status="unread")
+    return await fetch_notifications_tool(payload, db)
+
+@app.get("/v1/tasks/list")
+async def get_tasks(db: AsyncSession = Depends(get_db)):
+    """Fetches all active tasks."""
+    from sqlalchemy import select
+    from .models import Action
+    stmt = select(Action).where(Action.type == "create_task").order_by(Action.created_at.desc())
+    result = await db.execute(stmt)
+    actions = result.scalars().all()
+    return [{"id": str(a.action_id), "payload": a.payload, "status": a.status, "created_at": a.created_at.isoformat()} for a in actions]
+
+@app.get("/v1/calendar/list")
+async def get_calendar(db: AsyncSession = Depends(get_db)):
+    """Fetches upcoming calendar events."""
+    from sqlalchemy import select
+    from .models import CalendarEvent
+    stmt = select(CalendarEvent).order_by(CalendarEvent.start_time.asc())
+    result = await db.execute(stmt)
+    events = result.scalars().all()
+    return [{
+        "id": str(e.event_id),
+        "summary": e.summary,
+        "start": e.start_time.isoformat(),
+        "end": e.end_time.isoformat(),
+        "attached_docs": e.attached_docs
+    } for e in events]
 
 # ==============================================================================
 # The Overarching Intelligence Bridge (Orchestrator Routing)
@@ -137,8 +222,13 @@ async def handle_list_tools() -> list[Tool]:
         ),
         Tool(
             name="schedule_meeting",
-            description="Provisions a new meeting block on the Calendar API.",
+            description="Provisions a new meeting block and persists it to the database.",
             inputSchema=MeetingScheduleInput.model_json_schema()
+        ),
+        Tool(
+            name="fetch_calendar",
+            description="Pulls existing calendar slots for a specific time range.",
+            inputSchema=CalendarFetchInput.model_json_schema()
         ),
         Tool(
             name="create_task",
@@ -147,8 +237,13 @@ async def handle_list_tools() -> list[Tool]:
         ),
         Tool(
             name="send_notification",
-            description="Dispatches targeted alerts via configured channels.",
+            description="Dispatches targeted alerts via the Notification table.",
             inputSchema=NotificationInput.model_json_schema()
+        ),
+        Tool(
+            name="fetch_notifications",
+            description="Retrieves unread alerts for the user interface.",
+            inputSchema=NotificationFetchInput.model_json_schema()
         )
     ]
 
@@ -167,7 +262,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 
             elif name == "schedule_meeting":
                 payload = MeetingScheduleInput(**arguments)
-                res = await schedule_meeting_tool(payload)
+                res = await schedule_meeting_tool(payload, db)
+                result = json.dumps(res)
+                
+            elif name == "fetch_calendar":
+                payload = CalendarFetchInput(**arguments)
+                res = await fetch_calendar_tool(payload, db)
                 result = json.dumps(res)
                 
             elif name == "create_task":
@@ -177,7 +277,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 
             elif name == "send_notification":
                 payload = NotificationInput(**arguments)
-                res = await send_notification_tool(payload)
+                res = await send_notification_tool(payload, db)
+                result = json.dumps(res)
+                
+            elif name == "fetch_notifications":
+                payload = NotificationFetchInput(**arguments)
+                res = await fetch_notifications_tool(payload, db)
                 result = json.dumps(res)
             else:
                 raise ValueError(f"Unknown MCP tool registration invoked: {name}")
@@ -191,16 +296,27 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 # Hook up the specific transport router objects for SSE streaming
 sse = mcp.server.sse.SseServerTransport("/mcp/messages")
 
-@app.get("/mcp/sse")
-async def mcp_sse_endpoint(request: Request):
+from starlette.responses import Response
+class NoOpResponse(Response):
+    """A Starlette response that does nothing, allowing the MCP SDK to manage the ASGI lifecycle."""
+    async def __call__(self, scope, receive, send):
+        return
+
+# Custom ASGI Handlers for MCP to bypass FastAPI's automatic response management
+async def mcp_sse_handler(request: Request):
     """Initializing handshake endpoint utilized by an MCP-compatible LLM"""
     async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
         await mcp_server.run(streams[0], streams[1], mcp_server.create_initialization_options())
+    return NoOpResponse()
 
-@app.post("/mcp/messages")
-async def mcp_messages_endpoint(request: Request):
+async def mcp_messages_handler(request: Request):
     """Post routing endpoint where JSON-RPC calls are fed"""
     await sse.handle_post_message(request.scope, request.receive, request._send)
+    return NoOpResponse()
+
+# Register routes using add_route to avoid APIRoute/JSONResponse overhead
+app.add_route("/mcp/sse", mcp_sse_handler, methods=["GET"])
+app.add_route("/mcp/messages", mcp_messages_handler, methods=["POST"])
 
 # Default entry
 @app.get("/")
