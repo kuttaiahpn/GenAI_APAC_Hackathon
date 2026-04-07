@@ -8,20 +8,24 @@ from sqlalchemy import text
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / 'documents' / 'Context Docs' / 'config.yaml'
 
+# Prioritize Environment Variables for Cloud Run / Production
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_HOST = os.getenv("DB_HOST", "10.34.0.8").strip('[]') # Defaulting to your AlloyDB Private IP
+DB_PORT = int(os.getenv("DB_PORT", 5432))
+DB_NAME = os.getenv("DB_NAME", "taskninja")
+DB_PASS = os.getenv("DB_PASSWORD", "password")
+
+# Attempt to override with config.yaml if it exists (for local debugging)
 try:
-    with open(CONFIG_PATH, 'r') as f:
-        config_data = yaml.safe_load(f)
-    db_config = config_data.get('database', {})
-    DB_USER = os.getenv("DB_USER", db_config.get('user', 'postgres'))
-    DB_HOST = os.getenv("DB_HOST", db_config.get('host', 'localhost').strip('[]'))
-    DB_PORT = int(os.getenv("DB_PORT", db_config.get('port', 5432)))
-    DB_NAME = os.getenv("DB_NAME", db_config.get('name', 'taskninja'))
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, 'r') as f:
+            config_data = yaml.safe_load(f)
+            db_config = config_data.get('database', {})
+            DB_USER = os.getenv("DB_USER", db_config.get('user', DB_USER))
+            DB_HOST = os.getenv("DB_HOST", db_config.get('host', DB_HOST))
+            DB_NAME = os.getenv("DB_NAME", db_config.get('name', DB_NAME))
 except Exception as e:
-    print(f"Warning: Could not load config.yaml: {e}")
-    DB_USER = "postgres"
-    DB_HOST = "localhost"
-    DB_PORT = 5432
-    DB_NAME = "taskninja"
+    print(f"Note: Using environment variables for DB connection (Config skip: {e})")
 
 # Password should always come from environment variable
 DB_PASS = os.getenv("DB_PASSWORD", "password")

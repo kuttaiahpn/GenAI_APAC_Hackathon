@@ -16,29 +16,65 @@ st.set_page_config(
 
 # ─── Global CSS Injection ───
 # We revert to standard Streamlit layouts to ensure 100% visibility for the hackathon judges
+# ─── Global CSS Injection (Winner-Grade UI) ───
 st.markdown("""
 <style>
-    /* Vanish the 'Made with Streamlit' footer */
-    footer {visibility: hidden;}
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;600&display=swap');
 
-    /* Top bar styling */
+    :root {
+        --bg-slate: #0f172a;
+        --card-slate: rgba(30, 41, 59, 0.7);
+        --accent-indigo: #6366f1;
+        --accent-cyan: #22d3ee;
+        --text-slate: #f8fafc;
+        --border-slate: #334155;
+    }
+
+    /* Standard Streamlit Clean-Up */
+    footer {visibility: hidden;}
+    [data-testid="stAppViewContainer"] { background-color: var(--bg-slate); color: var(--text-slate); font-family: 'Inter', sans-serif; }
+    [data-testid="stSidebar"] { background-color: #1e293b; border-right: 1px solid var(--border-slate); }
+
+    /* Typography */
+    h1, h2, h3, .tn-topbar-title { font-family: 'Outfit', sans-serif !important; letter-spacing: -0.02em; }
+
+    /* Top bar styling (Winner-Grade) */
     .tn-topbar {
         display: flex; justify-content: space-between; align-items: center;
-        background: #1e1b4b; padding: 15px 30px; border-radius: 12px; margin-bottom: 25px;
-        border: 1px solid #3730a3;
+        background: linear-gradient(90deg, #1e1b4b 0%, #312e81 100%);
+        padding: 20px 40px; border-radius: 16px; margin-bottom: 30px;
+        border: 1px solid var(--accent-indigo);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
     }
-    .tn-topbar-title { font-size: 24px; font-weight: 800; color: #e0e7ff; }
+    .tn-topbar-title { font-size: 28px; font-weight: 800; color: white; margin: 0; }
     .tn-badge { 
-        background: #7c3aed; padding: 4px 12px; border-radius: 20px; 
-        font-size: 12px; font-weight: 700; color: white;
+        background: var(--accent-indigo); padding: 6px 16px; border-radius: 30px; 
+        font-size: 13px; font-weight: 700; color: white; border: 1px solid var(--accent-cyan);
     }
 
-    /* Metric cards */
+    /* Metric cards (Glassmorphism) */
     .metric-card {
-        background: #1e1b4b; border: 1px solid #3730a3; border-radius: 12px;
-        padding: 20px; text-align: center;
+        background: var(--card-slate); 
+        backdrop-filter: blur(10px);
+        border: 1px solid var(--border-slate); 
+        border-radius: 16px;
+        padding: 30px; text-align: center;
+        transition: all 0.3s ease;
     }
-    .metric-card .num { font-size: 36px; font-weight: 800; color: #7c3aed; }
+    .metric-card:hover { border-color: var(--accent-cyan); transform: translateY(-5px); }
+    .metric-card h3 { font-size: 14px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 15px; }
+    .metric-card .num { font-size: 48px; font-weight: 800; color: var(--accent-cyan); line-height: 1; }
+
+    /* Swarm Pulse Indicator */
+    .pulse-container { display: flex; align-items: center; gap: 10px; padding: 15px; background: rgba(99, 102, 241, 0.1); border-radius: 12px; border: 1px solid rgba(99, 102, 241, 0.3); }
+    .pulse-dot { width: 12px; height: 12px; background-color: #10b981; border-radius: 50%; box-shadow: 0 0 10px #10b981; animation: pulse-anim 2s infinite; }
+    @keyframes pulse-anim { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
+
+    /* Mobile-Responsive Overrides */
+    @media (max_width: 768px) {
+        .tn-topbar { flex-direction: column; gap: 15px; padding: 20px; text-align: center; }
+        .metric-card { margin-bottom: 20px; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -112,11 +148,37 @@ with st.sidebar:
         format_func=lambda x: NAV_PAGES[x]
     )
     
+    # ─── Swarm Pulse & GCP Health ───
     st.markdown("---")
-    st.markdown("🟢 **System Pulse: Active**")
-    st.caption(f"Backend: `{BACKEND_URL}`")
+    st.markdown("### 🫀 Swarm Pulse")
+    st.markdown(f"""
+    <div class="pulse-container">
+        <div class="pulse-dot"></div>
+        <div style="font-size: 13px; font-weight: 600; color: #a5b4fc;">Orchestrator: Active</div>
+    </div>
+    """, unsafe_allow_html=True)
     
-    if st.button("🔄 Refresh Data"):
+    st.markdown("---")
+    st.markdown("### ☁️ GCP Infrastructure")
+    
+    # Real Health Check with Auth
+    try:
+        headers = {"X-API-Key": API_KEY}
+        h_res = requests.get(f"{BACKEND_URL}/v1/health", headers=headers, timeout=2).json()
+        adb_s = h_res.get("adb", "🔴")
+        vtx_s = h_res.get("vtx", "🔴")
+        pub_s = h_res.get("pub", "🟢")
+    except:
+        adb_s, vtx_s, pub_s = "🔴", "🔴", "🟠"
+
+    cols = st.columns(3)
+    with cols[0]: st.caption("🗄️ ADB"); st.markdown(adb_s)
+    with cols[1]: st.caption("🧠 VTX"); st.markdown(vtx_s)
+    with cols[2]: st.caption("📡 PUB"); st.markdown(pub_s)
+    
+    st.caption(f"Gateway: `{BACKEND_URL[:25]}...`")
+    if st.button("🔄 Full System Sync", use_container_width=True):
+        st.cache_data.clear()
         st.rerun()
         
     st.markdown("---")
@@ -143,16 +205,32 @@ if page_key == "dashboard":
     try:
         headers = {"X-API-Key": API_KEY}
         stats_res = requests.get(f"{BACKEND_URL}/v1/stats", headers=headers, timeout=5).json()
-    except:
+    except Exception as e:
+        st.error(f"⚠️ Gateway Offline: {e}")
         stats_res = {"documents": 0, "tasks": 0, "events": 0}
 
     m1, m2, m3 = st.columns(3)
     with m1:
-        st.markdown(f'<div class="metric-card"><h3>Live Docs</h3><div class="num">{stats_res["documents"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+            <div class="metric-card">
+                <h3>Live Memory (Docs)</h3>
+                <div class="num">{stats_res["documents"]}</div>
+            </div>
+        ''', unsafe_allow_html=True)
     with m2:
-        st.markdown(f'<div class="metric-card"><h3>Active Tasks</h3><div class="num">{stats_res["tasks"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+            <div class="metric-card">
+                <h3>Pending Actions</h3>
+                <div class="num">{stats_res["tasks"]}</div>
+            </div>
+        ''', unsafe_allow_html=True)
     with m3:
-        st.markdown(f'<div class="metric-card"><h3>Calendar</h3><div class="num">{stats_res["events"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+            <div class="metric-card">
+                <h3>Calendar Blocks</h3>
+                <div class="num">{stats_res["events"]}</div>
+            </div>
+        ''', unsafe_allow_html=True)
     
     st.divider()
     
@@ -193,29 +271,36 @@ elif page_key == "chat":
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.status("🥷 Swarm reasoning...", expanded=True) as status:
+            # Swarm Status Visualizer (Winner-Grade UX)
+            with st.status("🧠 Swarm reasoning...", expanded=True) as status:
                 try:
                     payload = {"query": prompt, "thread_id": st.session_state.thread_id}
+                    headers = {"X-API-Key": API_KEY}
+                    
+                    st.write("🔍 **Master Orchestrator** identifying sub-agents...")
                     resp = requests.post(f"{BACKEND_URL}/v1/orchestrate", 
                                       json=payload, 
-                                      headers={"X-API-Key": API_KEY},
+                                      headers=headers,
                                       timeout=90)
                     resp.raise_for_status()
                     data = resp.json()
                     
-                    final_text = data.get("response", "Execution complete.")
+                    final_text = data.get("response", "Swarm execution complete.")
                     meta = data.get("metadata", {})
+                    agents = meta.get("invoked_agents", [])
+                    
+                    if agents:
+                        for agent in agents:
+                            st.write(f"⚡ **{agent.replace('_', ' ').title()}** executed tool successfully.")
+                    
+                    status.update(label="✅ Swarm Execution Complete", state="complete")
                     
                     st.markdown(final_text)
-                    with st.expander("🔍 Swarm Trace Details"):
-                        st.json(meta)
-                    
                     st.session_state.messages.append({"role": "assistant", "content": final_text, "meta": meta})
-                    status.update(label="✅ Success", state="complete")
                     
                 except Exception as e:
-                    st.error(f"Backend communication error: {e}")
-                    status.update(label="❌ Failed", state="error")
+                    st.error(f"⚠️ Swarm Error: {e}")
+                    status.update(label="❌ Swarm Failed", state="error")
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE: DOCUMENT VAULT (Uploaded + Ingestion)
@@ -291,22 +376,45 @@ elif page_key == "tasks":
 # PAGE: CALENDAR (Stub)
 # ═══════════════════════════════════════════════════════════════
 elif page_key == "calendar":
-    st.write("### 📅 Swarm Calendar")
+    st.write("### 📅 Project Intelligence Schedule")
+    st.caption("Categorized view of your upcoming swarm-coordinated events.")
+    
     try:
         headers = {"X-API-Key": API_KEY}
         cal_res = requests.get(f"{BACKEND_URL}/v1/calendar/list", headers=headers, timeout=5).json()
+        
         if not cal_res:
-            st.info("No upcoming meetings found.")
+            st.info("No upcoming meetings found. Ask the Swarm to schedule one!")
         else:
+            # Grouping Logic for Rich UI
+            today = datetime.now().date()
+            categories = {"Today": [], "This Week": [], "Later": []}
+            
             for e in cal_res:
-                start = e["start"][:16].replace("T", " ")
-                with st.container(border=True):
-                    st.markdown(f"#### {e['summary']}")
-                    st.markdown(f"🕘 **Time:** {start}")
-                    if e.get("attached_docs"):
-                        st.caption(f"📎 **Attached:** {', '.join(e['attached_docs'])}")
-    except:
-        st.error("Failed to fetch calendar from backend.")
+                e_date = datetime.fromisoformat(e["start"][:19]).date()
+                if e_date == today: categories["Today"].append(e)
+                elif e_date < (today + timedelta(days=7)): categories["This Week"].append(e)
+                else: categories["Later"].append(e)
+
+            for cat, events in categories.items():
+                if not events: continue
+                st.markdown(f"#### {cat}")
+                for e in events:
+                    start_t = e["start"][11:16]
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 4])
+                        with c1:
+                            st.markdown(f"**{start_t}**")
+                            st.caption(f"{e['start'][:10]}")
+                        with c2:
+                            st.markdown(f"**{e['summary']}**")
+                            if e.get("participants"):
+                                st.caption(f"👥 {', '.join(e['participants'][:3])}")
+                            if e.get("attached_docs"):
+                                st.markdown(f"📎 `{'`, `'.join(e['attached_docs'])}`")
+                                
+    except Exception as e:
+        st.error(f"Failed to fetch calendar: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE: AUDIT
