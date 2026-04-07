@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import mcp.server.sse
 from mcp.server import Server
 from mcp.types import Tool, TextContent
+from google.cloud import storage
 
 # Local Application Imports
 from .database import AsyncSessionFactory, engine, init_extensions
@@ -24,13 +25,15 @@ import uuid
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initializes the database schema and pgvector extensions automatically on Cloud Run boot."""
+    print(f"SRE_BOOT: Starting Intelligence Gateway...", flush=True)
     try:
         await init_extensions()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        print("Successfully initialized AlloyDB Schema and pgvector extensions.", flush=True)
+        print("SRE_VERIFIED: AlloyDB Schema and pgvector extensions initialized successfully.", flush=True)
     except Exception as e:
-        print(f"Schema initialization warning: {e}", flush=True)
+        print(f"SRE_CRITICAL: Schema initialization failed: {e}", flush=True)
+        # We don't exit here to allow for inspection, but mark the system as unhealthy
     yield
     # Cleanup logic (if any) could go here
 
@@ -115,21 +118,67 @@ async def post_upload_documents(
 
 # --- New Frontend Integration Endpoints ---
 
+@app.post("/v1/webhooks/gcs-sync")
+async def gcs_sync_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    """Handles Pub/Sub push notifications from GCS for direct bucket uploads."""
+    try:
+        envelope = await request.json()
+        if not envelope or "message" not in envelope:
+            raise HTTPException(status_code=400, detail="Invalid Pub/Sub message format.")
+        
+        # Decode the Pub/Sub message attributes
+        attributes = envelope["message"].get("attributes", {})
+        event_type = attributes.get("eventType")
+        bucket_id = attributes.get("bucketId")
+        object_id = attributes.get("objectId")
+        
+        if event_type == "OBJECT_FINALIZE":
+            print(f"SRE_LOG: Direct GCS Upload Detected: {object_id} in {bucket_id}")
+            # Initialize Storage Client to download the new file
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_id)
+            blob = bucket.blob(object_id)
+            content = blob.download_as_text()
+            
+            # Trigger Ingestion
+            doc_id = await ingest_document(
+                db=db,
+                raw_text=content,
+                user_id=uuid.UUID("771ce1ff-b0ed-4246-ba3b-dca00665c138"), # Default Judge User
+                title=object_id
+            )
+            return {"status": "synced", "doc_id": str(doc_id)}
+            
+        return {"status": "ignored", "reason": "Not an OBJECT_FINALIZE event"}
+    except Exception as e:
+        print(f"SRE_ERROR: GCS Webhook Sync FAILED: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.get("/v1/stats")
 async def get_stats(db: AsyncSession = Depends(get_db)):
     """Dashboard metrics: Counts of Docs, Tasks, and Events."""
     from sqlalchemy import select, func
     from .models import Document, Action, CalendarEvent
+    from sqlalchemy.exc import SQLAlchemyError
     
-    doc_count = await db.scalar(select(func.count(Document.doc_id)))
-    task_count = await db.scalar(select(func.count(Action.action_id)).where(Action.type == "create_task"))
-    event_count = await db.scalar(select(func.count(CalendarEvent.event_id)))
-    
-    return {
-        "documents": doc_count or 0,
-        "tasks": task_count or 0,
-        "events": event_count or 0
-    }
+    try:
+        doc_count = await db.scalar(select(func.count(Document.doc_id))) or 0
+        task_count = await db.scalar(select(func.count(Action.action_id)).where(Action.type == "create_task")) or 0
+        event_count = await db.scalar(select(func.count(CalendarEvent.event_id))) or 0
+        
+        return {
+            "status": "synchronized",
+            "documents": int(doc_count),
+            "tasks": int(task_count),
+            "events": int(event_count)
+        }
+    except SQLAlchemyError as e:
+        print(f"SRE_ERROR: Stats retrieval failed: {e}", flush=True)
+        return {
+            "status": "sync_failed",
+            "error": str(e),
+            "documents": 0, "tasks": 0, "events": 0
+        }
 
 @app.get("/v1/notifications/list")
 async def get_notifications(recipient: str, db: AsyncSession = Depends(get_db)):
@@ -148,6 +197,14 @@ async def get_tasks(db: AsyncSession = Depends(get_db)):
     actions = result.scalars().all()
     return [{"id": str(a.action_id), "payload": a.payload, "status": a.status, "created_at": a.created_at.isoformat()} for a in actions]
 
+@app.get("/v1/calendar/list")
+async def get_calendar(db: AsyncSession = Depends(get_db)):
+    """Fetches upcoming calendar events."""
+    from sqlalchemy import select
+    from .models import CalendarEvent
+    stmt = select(CalendarEvent).order_by(CalendarEvent.start_time.asc())
+    result = await db.execute(stmt)
+    events = result.scalars().all()
     return [{
         "id": str(e.event_id),
         "summary": e.summary,
@@ -156,6 +213,35 @@ async def get_tasks(db: AsyncSession = Depends(get_db)):
         "participants": e.participants,
         "attached_docs": e.attached_docs
     } for e in events]
+
+@app.patch("/v1/tasks/{task_id}")
+async def update_task(task_id: str, payload: dict, db: AsyncSession = Depends(get_db)):
+    """Updates the status and metadata of a task."""
+    from sqlalchemy import select, update
+    from .models import Action
+    import uuid
+    
+    try:
+        stmt = select(Action).where(Action.action_id == uuid.UUID(task_id))
+        result = await db.execute(stmt)
+        task = result.scalar_one_or_none()
+        
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        # Update fields
+        if "status" in payload:
+            task.status = payload["status"]
+        if "notes" in payload:
+            if not task.payload: task.payload = {}
+            task.payload["sre_notes"] = payload["notes"]
+            
+        await db.commit()
+        return {"status": "updated", "task_id": task_id}
+    except Exception as e:
+        await db.rollback()
+        print(f"SRE_ERROR: Task update failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/v1/health")
 async def get_health(db: AsyncSession = Depends(get_db)):

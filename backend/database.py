@@ -36,12 +36,21 @@ DATABASE_URL = os.getenv(
     f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?ssl=disable"
 )
 
-# Set up the async engine
+# Set up the async engine with Winner-Grade Resilience
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,  # Set to True for debugging SQL queries
+    echo=False,  
     pool_size=20,
     max_overflow=10,
+    pool_timeout=60,       # Increased for Cloud Run/AlloyDB cold starts
+    pool_recycle=1800,     # Prevent stale connections
+    pool_pre_ping=True,    # Verify connection health before use
+    connect_args={
+        "command_timeout": 60,
+        "server_settings": {
+            "application_name": "taskninja-gateway"
+        }
+    }
 )
 
 # Async session factory
