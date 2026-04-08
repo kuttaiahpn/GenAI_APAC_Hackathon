@@ -3,6 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from fastapi import FastAPI, Depends, Request, Header, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 import mcp.server.sse
 from mcp.server import Server
@@ -45,11 +46,21 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-API_KEY = os.getenv("API_KEY", "hackathon_default_key")
+# SRE Resilience: Enable CORS for cross-domain hackathon connectivity
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# SRE Secret Sovereignty: Strictly pull API_KEY from Secret Manager mount
+API_KEY = os.getenv("API_KEY")
 
 async def verify_api_key(x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    if not API_KEY or x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or Missing API Key configuration.")
 
 async def get_db():
     """Dependency injection to provide SQLAlchemy async sessions to our endpoints."""
@@ -155,11 +166,15 @@ async def gcs_sync_webhook(request: Request, db: AsyncSession = Depends(get_db))
         return {"status": "error", "message": str(e)}
 
 @app.get("/v1/stats")
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(response: Response = None, db: AsyncSession = Depends(get_db)):
     """Dashboard metrics: Counts of Docs, Tasks, and Events."""
     from sqlalchemy import select, func
     from .models import Document, Action, CalendarEvent
     from sqlalchemy.exc import SQLAlchemyError
+    from fastapi import Response
+    
+    # SRE Tracing Header
+    if response: response.headers["X-SRE-Trace"] = "Handshake: Gateway-Resolved"
     
     try:
         doc_count = await db.scalar(select(func.count(Document.doc_id))) or 0

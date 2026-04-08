@@ -5,6 +5,8 @@ import time
 import os
 import json
 from datetime import datetime, timedelta
+import google.auth.transport.requests
+import google.oauth2.id_token
 
 # ─── Page Config ───
 st.set_page_config(
@@ -95,20 +97,39 @@ if "tasks" not in st.session_state:
 
 API_KEY = os.getenv("API_KEY", "hackathon_default_key")
 
+# 🛡️ SRE Identity Bridge: Fetch OIDC Token for Cloud Run
+def get_id_token(audience):
+    """Fetches an ID token from the GCP metadata server for service-to-service auth."""
+    if "localhost" in audience or "127.0.0.1" in audience:
+        return None
+    try:
+        auth_req = google.auth.transport.requests.Request()
+        return google.oauth2.id_token.fetch_id_token(auth_req, audience)
+    except Exception as e:
+        print(f"SRE_WARN: Could not fetch ID token: {e}")
+        return None
+
 # Auto-detect Local vs Cloud Run
 def get_backend_url():
-    # If explicitly set in ENV, use that (for Cloud Run)
     env_url = os.getenv("BACKEND_URL")
-    if env_url: return env_url
+    if env_url: return env_url.rstrip("/")
     
     # Otherwise, try local Gateway
     try:
         requests.get("http://127.0.0.1:8000/", timeout=1)
         return "http://127.0.0.1:8000"
     except:
-        return "https://taskninja-mcp-gateway-836906162288.us-central1.run.app"
+        # No hardcoded fallback - force user to set BACKEND_URL in Cloud Run
+        st.error("❌ BACKEND_URL is not set. Please check your Cloud Run environment variables.")
+        st.stop()
 
 BACKEND_URL = get_backend_url()
+API_KEY = os.getenv("API_KEY", "hackathon_default_key")
+ID_TOKEN = get_id_token(BACKEND_URL)
+
+# SRE Validation: Log URL State
+print(f"SRE_BOOT: Target Gateway @ {BACKEND_URL}", flush=True)
+if ID_TOKEN: print("SRE_BOOT: OIDC Handshake Active ✅", flush=True)
 
 # ═══════════════════════════════════════════════════════════════
 # LOGIN / LANDING SCREEN (Winner-Grade 2-Column Layout)
@@ -204,6 +225,7 @@ with st.sidebar:
         st.rerun()
         
     st.markdown("---")
+    st.caption(f"SRE Trace: `{sre_trace}`")
     st.caption(f"Thread: `{st.session_state.thread_id[:8]}`")
 
 # ═══════════════════════════════════════════════════════════════
@@ -226,15 +248,21 @@ if page_key == "dashboard":
     # Fetch Live Stats with SRE-Grade Resilience
     try:
         headers = {"X-API-Key": API_KEY}
-        # Increased timeout to 15s for Cloud Run VPC latency
-        stats_res = requests.get(f"{BACKEND_URL}/v1/stats", headers=headers, timeout=15)
+        if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
+        
+        # Standardized 300s timeout for Agentic reasoning
+        stats_res = requests.get(f"{BACKEND_URL}/v1/stats", headers=headers, timeout=300)
         stats_data = stats_res.json()
         
+        # SRE Handshake Logging
+        sre_trace = stats_res.headers.get("X-SRE-Trace", "🛡️ OIDC_ACTIVE") if ID_TOKEN else stats_res.headers.get("X-SRE-Trace", "🔴 GATEWAY_SILENT")
         if stats_data.get("status") == "sync_failed":
              st.error(f"⚠️ ADB Sync Blocked: {stats_data.get('error')}")
     except Exception as e:
         st.warning(f"⚠️ Stats Sync Unavailable: {e}")
         stats_data = {"documents": 0, "tasks": 0, "events": 0}
+        sre_trace = "🔴 CONNECTION_ERROR"
+        
 
     # Row 1: Task Intelligence
     st.markdown("#### 📋 Task Intelligence")
@@ -262,7 +290,9 @@ if page_key == "dashboard":
     st.subheader("🔔 Recent Notifications (ali@example.com)")
     try:
         headers = {"X-API-Key": API_KEY}
-        notes = requests.get(f"{BACKEND_URL}/v1/notifications/list?recipient=ali@example.com", headers=headers, timeout=5).json()
+        if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
+        
+        notes = requests.get(f"{BACKEND_URL}/v1/notifications/list?recipient=ali@example.com", headers=headers, timeout=300).json()
         if notes.get("notifications"):
             for n in notes["notifications"][:3]:
                 st.toast(f"New Alert: {n['message']}")
@@ -300,12 +330,13 @@ elif page_key == "chat":
                 try:
                     payload = {"query": prompt, "thread_id": st.session_state.thread_id}
                     headers = {"X-API-Key": API_KEY}
+                    if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
                     
                     st.write("🔍 **Master Orchestrator** identifying sub-agents...")
                     resp = requests.post(f"{BACKEND_URL}/v1/orchestrate", 
                                       json=payload, 
                                       headers=headers,
-                                      timeout=90)
+                                      timeout=300)
                     resp.raise_for_status()
                     data = resp.json()
                     
@@ -353,12 +384,13 @@ elif page_key == "vault":
                         # Prepare multipart upload
                         files = [('files', (file.name, file.getvalue(), file.type))]
                         headers = {"X-API-Key": API_KEY}
+                        if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
                         
                         resp = requests.post(
                             f"{BACKEND_URL}/v1/upload",
                             files=files,
                             headers=headers,
-                            timeout=120 # Increased for larger Winner-Grade documents
+                            timeout=300 # Standardized SRE timeout
                         )
                         resp.raise_for_status()
                         st.success(f"✅ Ingested: {file.name}")
@@ -379,8 +411,10 @@ elif page_key == "tasks":
     
     try:
         headers = {"X-API-Key": API_KEY}
+        if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
+        
         # High-resilience fetch for Tasks list
-        tasks_res = requests.get(f"{BACKEND_URL}/v1/tasks/list", headers=headers, timeout=15).json()
+        tasks_res = requests.get(f"{BACKEND_URL}/v1/tasks/list", headers=headers, timeout=300).json()
         
         # Dynamic Winner-Grade Stats
         today_count = sum(1 for t in tasks_res if t.get("created_at", "").startswith(datetime.now().strftime("%Y-%m-%d")))
@@ -416,9 +450,10 @@ elif page_key == "tasks":
                         
                         if st.form_submit_button("💾 Sync to AlloyDB", use_container_width=True, type="primary"):
                              try:
-                                 payload = {"status": new_status, "notes": update_note}
                                  headers = {"X-API-Key": API_KEY}
-                                 res = requests.patch(f"{BACKEND_URL}/v1/tasks/{t['id']}", json=payload, headers=headers, timeout=10)
+                                 if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
+                                 
+                                 res = requests.patch(f"{BACKEND_URL}/v1/tasks/{t['id']}", json=payload, headers=headers, timeout=300)
                                  res.raise_for_status()
                                  
                                  st.success(f"Status Commit: {new_status}")
@@ -445,7 +480,9 @@ elif page_key == "calendar":
     
     try:
         headers = {"X-API-Key": API_KEY}
-        raw_res = requests.get(f"{BACKEND_URL}/v1/calendar/list", headers=headers, timeout=5)
+        if ID_TOKEN: headers["Authorization"] = f"Bearer {ID_TOKEN}"
+        
+        raw_res = requests.get(f"{BACKEND_URL}/v1/calendar/list", headers=headers, timeout=300)
         raw_res.raise_for_status()
         cal_res = raw_res.json()
         

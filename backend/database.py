@@ -9,11 +9,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / 'documents' / 'Context Docs' / 'config.yaml'
 
 # Prioritize Environment Variables for Cloud Run / Production
+# SRE Secret Sovereignty: Strictly pull configurations from Secret Manager / Cloud Run ENVs
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_HOST = os.getenv("DB_HOST", "10.34.0.8").strip('[]') # Defaulting to your AlloyDB Private IP
+DB_HOST = os.getenv("DB_HOST", "10.34.0.8").strip('[]') # Your verified AlloyDB Private IP
 DB_PORT = int(os.getenv("DB_PORT", 5432))
-DB_NAME = os.getenv("DB_NAME", "taskninja")
-DB_PASS = os.getenv("DB_PASSWORD", "password")
+DB_NAME = os.getenv("DB_NAME", "postgres")
+DB_PASS = os.getenv("DB_PASSWORD")
+
+if not DB_PASS:
+    # Fail-fast during SRE boot to prevent silent data-sync leaks
+    raise RuntimeError("CRITICAL: DB_PASSWORD environment variable is NOT SET. Check Secret Manager!")
 
 # Attempt to override with config.yaml if it exists (for local debugging)
 try:

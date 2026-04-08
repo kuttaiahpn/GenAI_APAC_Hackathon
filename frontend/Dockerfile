@@ -22,5 +22,5 @@ USER streamlit
 
 EXPOSE 8501
 
-# Force bind Streamlit correctly to the assigned isolated port mapping
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Force bind Streamlit correctly to enable OIDC and Websocket bridges
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--browser.serverAddress=0.0.0.0", "--server.enableCORS=false"]

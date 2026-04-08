@@ -5,3 +5,10 @@ backgroundColor="#111827"
 secondaryBackgroundColor="#1F2937"
 textColor="#F3F4F6"
 font="sans serif"
+
+[server]
+port = 8501
+address = "0.0.0.0"
+enableCORS = false
+enableXsrfProtection = false
+headless = true
