@@ -24,7 +24,7 @@ This document serves as the "Proof of Testing" for the TaskNinja Hackathon Submi
 - **[UAT-2.2] Notification Toast (Mandatory)**
   - Action: Generate a scheduled meeting (in Chat).
   - Result: UI Toast appears in Dashboard sidebar within 3s.
-- **[UAT-2.3] Infrastructure Glance (Good-to-Have)**
+- **[UAT-2.3] Infrastructure Glance (Mandatory)**
   - Action: Verify "Backend" URL tooltip matches current Gateway IP.
   - Result: Transparent view of Cloud-Native deployment for judges.
 
@@ -37,7 +37,7 @@ This document serves as the "Proof of Testing" for the TaskNinja Hackathon Submi
 - **[UAT-3.2] Multi-Step Scheduler (Mandatory)**
   - Action: Ask: "Schedule a sync for tomorrow at 4 PM to review the judges' criteria."
   - Result: `Orchestrator -> SchedulerNode` flow triggered; meeting saved to AlloyDB.
-- **[UAT-3.3] Pulse Trace Visualization (Good-to-Have)**
+- **[UAT-3.3] Pulse Trace Visualization (Mandatory)**
   - Action: View the "🧠 Swarm Trace" under the chat bubble.
   - Result: Visual proof of every sub-agent invoked sequentially.
 
@@ -47,7 +47,7 @@ This document serves as the "Proof of Testing" for the TaskNinja Hackathon Submi
 - **[UAT-4.1] Batch Ingestion (Mandatory)**
   - Action: Upload 3-5 text/markdown files simultaneously.
   - Result: Multi-file progress bar shows batch status; 100% success balloons.
-- **[UAT-4.2] Vector Memory Update (Good-to-Have)**
+- **[UAT-4.2] Vector Memory Update (Good-to-Have for Future Roadmap)**
   - Action: Ingest a new doc, then immediately query it in Chat.
   - Result: Zero-latency RAG—assistant "knows" the new data instantly.
 

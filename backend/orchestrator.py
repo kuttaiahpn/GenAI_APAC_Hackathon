@@ -55,19 +55,20 @@ RAG_CONTEXT: {rag}
 ACTIVE_TASKS: {tasks}"""
     
     combined_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\nCONTEXT:\n{context_str}"
-    
+    print(f"SRE_MARKER: Orchestrator reasoning for intent: '{user_q[:30]}...' (RAG Docs: {len(state.get('rag_context', []))})", flush=True)
     res = await llm.ainvoke(combined_prompt)
+    print("SRE_MARKER: Orchestrator reasoning COMPLETE. ✅", flush=True)
     
-    # Parse JSON robustly
+    # Parse JSON robustly using bracket boundaries
     try:
         raw = res.content.strip()
-        # Strip markdown fences if LLM wraps them
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        raw = raw.strip()
-        actions_payload = json.loads(raw)
+        start_idx = raw.find("{")
+        end_idx = raw.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+            json_str = raw[start_idx:end_idx+1]
+            actions_payload = json.loads(json_str)
+        else:
+            raise ValueError("No JSON object found in response.")
     except Exception as e:
         print(f"[Orchestrator] JSON parse failed: {e}. Raw: {res.content[:200]}", flush=True)
         actions_payload = {

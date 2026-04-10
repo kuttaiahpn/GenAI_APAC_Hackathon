@@ -60,7 +60,7 @@ This document chronologically details the technical journey of TaskNinja, highli
 - Build a persistent cron-based "Nudge Agent" that monitors the `Task` table and triggers the `NotifyNode` via GCP Pub/Sub for upcoming deadlines.
 
 ### 3. Cost & Performance Optimization
-- Implement an **Intelligence Tiering** system: Use Gemini 2.5 Flash for routine routing and only escalate to Gemini 1.5 Pro for complex orchestration tasks.
-
+- Implement an **Intelligence Tiering** system: Use Gemini 2.5 Pro for routine routing and only escalate to Gemini 2.5 Pro for complex orchestration tasks.
+# None of the other models are available for us to use. Verfied through the scouting method.
 ### 4. Edge Tooling
 - Support for on-device MCP servers, allowing the TaskNinja orchestrator to interact with a user's local terminal or desktop applications securely.

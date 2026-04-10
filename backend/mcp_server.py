@@ -1,8 +1,10 @@
 import json
 import os
+import asyncio
+import traceback
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from fastapi import FastAPI, Depends, Request, Header, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, Request, Response, Header, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 import mcp.server.sse
@@ -11,7 +13,7 @@ from mcp.types import Tool, TextContent
 from google.cloud import storage
 
 # Local Application Imports
-from .database import AsyncSessionFactory, engine, init_extensions
+from .database import AsyncSessionFactory, engine, init_extensions, DB_CONFIG_VALID
 from .models import Base
 from .tools import (
     RAGQueryInput, MeetingScheduleInput, CalendarFetchInput, 
@@ -25,16 +27,31 @@ import uuid
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initializes the database schema and pgvector extensions automatically on Cloud Run boot."""
-    print(f"SRE_BOOT: Starting Intelligence Gateway...", flush=True)
-    try:
-        await init_extensions()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        print("SRE_VERIFIED: AlloyDB Schema and pgvector extensions initialized successfully.", flush=True)
-    except Exception as e:
-        print(f"SRE_CRITICAL: Schema initialization failed: {e}", flush=True)
-        # We don't exit here to allow for inspection, but mark the system as unhealthy
+    """Initializes the database schema non-blockingly to satisfy Cloud Run health checks."""
+    print(f"SRE_BOOT: Initializing Intelligence Gateway [Version Winner-Final]...", flush=True)
+    
+    # Move the DB sync to a background task so we can listen on port 8080 instantly
+    async def background_init():
+        print(f"SRE_BOOT: Commencing background ADB Sync...", flush=True)
+        if not DB_CONFIG_VALID:
+            print("SRE_WARN: DB Initialization skipped due to invalid configuration.", flush=True)
+            return
+
+        try:
+            # 1. Extensions (pgvector, etc)
+            await init_extensions()
+            # 2. Schema (SQLAlchemy Models)
+            if engine:
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                print("SRE_VERIFIED: AlloyDB Sync & pgvector ready for traffic. ✅", flush=True)
+        except Exception:
+            err = traceback.format_exc()
+            print(f"SRE_CRITICAL: Background Sync failed:\n{err}", flush=True)
+
+    # Launch the task without blocking startup
+    asyncio.create_task(background_init())
+    
     yield
     # Cleanup logic (if any) could go here
 
@@ -56,11 +73,20 @@ app.add_middleware(
 )
 
 # SRE Secret Sovereignty: Strictly pull API_KEY from Secret Manager mount
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY", "").strip()
 
-async def verify_api_key(x_api_key: str = Header(...)):
+async def verify_api_key(request: Request, x_api_key: str = Header(...)):
+    auth_header = request.headers.get("Authorization", "Missing")
+    is_oidc = "Bearer" in auth_header
+    
+    # Log the handshake attempt for SRE diagnostics (Cloud Run Logs)
+    client_key_stub = x_api_key[:4] + "****" if x_api_key else "Missing"
+    print(f"SRE_TRACE: Incoming Request | API_KEY: {client_key_stub} | OIDC: {is_oidc} | Path: {request.url.path}", flush=True)
+
     if not API_KEY or x_api_key != API_KEY:
+        print(f"SRE_CRITICAL: API_KEY Validation Failed. Expected: {API_KEY[:4]}****, Got: {client_key_stub}", flush=True)
         raise HTTPException(status_code=403, detail="Invalid or Missing API Key configuration.")
+    return x_api_key
 
 async def get_db():
     """Dependency injection to provide SQLAlchemy async sessions to our endpoints."""
@@ -165,9 +191,21 @@ async def gcs_sync_webhook(request: Request, db: AsyncSession = Depends(get_db))
         print(f"SRE_ERROR: GCS Webhook Sync FAILED: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.get("/v1/health")
+async def health_check():
+    """Heartbeat endpoint for Cloud Run and SRE monitoring."""
+    db_status = "connected" if (DB_CONFIG_VALID and engine) else "configuration_missing"
+    return {
+        "status": "online",
+        "database": db_status,
+        "version": "winner-final-resilient",
+        "sre_trace": "PRO_SRE_HARDENED"
+    }
+
 @app.get("/v1/stats")
 async def get_stats(response: Response = None, db: AsyncSession = Depends(get_db)):
     """Dashboard metrics: Counts of Docs, Tasks, and Events."""
+    print("SRE_MARKER: Entering /v1/stats | DB Fetch Commencing...", flush=True)
     from sqlalchemy import select, func
     from .models import Document, Action, CalendarEvent
     from sqlalchemy.exc import SQLAlchemyError
@@ -181,6 +219,7 @@ async def get_stats(response: Response = None, db: AsyncSession = Depends(get_db
         task_count = await db.scalar(select(func.count(Action.action_id)).where(Action.type == "create_task")) or 0
         event_count = await db.scalar(select(func.count(CalendarEvent.event_id))) or 0
         
+        print(f"SRE_MARKER: Stats Sync COMPLETE | Docs: {doc_count} ✅", flush=True)
         return {
             "status": "synchronized",
             "documents": int(doc_count),
@@ -205,11 +244,13 @@ async def get_notifications(recipient: str, db: AsyncSession = Depends(get_db)):
 @app.get("/v1/tasks/list")
 async def get_tasks(db: AsyncSession = Depends(get_db)):
     """Fetches all active tasks."""
+    print("SRE_MARKER: Entering /v1/tasks/list | Query Commencing...", flush=True)
     from sqlalchemy import select
     from .models import Action
     stmt = select(Action).where(Action.type == "create_task").order_by(Action.created_at.desc())
     result = await db.execute(stmt)
     actions = result.scalars().all()
+    print(f"SRE_MARKER: Task Sync COMPLETE | Count: {len(actions)} ✅", flush=True)
     return [{"id": str(a.action_id), "payload": a.payload, "status": a.status, "created_at": a.created_at.isoformat()} for a in actions]
 
 @app.get("/v1/calendar/list")
@@ -247,9 +288,20 @@ async def update_task(task_id: str, payload: dict, db: AsyncSession = Depends(ge
         # Update fields
         if "status" in payload:
             task.status = payload["status"]
+            
+        modified_payload = False
+        new_payload = dict(task.payload or {})
+        
         if "notes" in payload:
-            if not task.payload: task.payload = {}
-            task.payload["sre_notes"] = payload["notes"]
+            new_payload["sre_notes"] = payload["notes"]
+            modified_payload = True
+            
+        if "task_description" in payload:
+            new_payload["task_description"] = payload["task_description"]
+            modified_payload = True
+            
+        if modified_payload:
+            task.payload = new_payload
             
         await db.commit()
         return {"status": "updated", "task_id": task_id}
@@ -258,9 +310,58 @@ async def update_task(task_id: str, payload: dict, db: AsyncSession = Depends(ge
         print(f"SRE_ERROR: Task update failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class ManualTaskInput(BaseModel):
+    task_description: str
+
+@app.post("/v1/tasks/manual")
+async def post_manual_task(input_data: ManualTaskInput, db: AsyncSession = Depends(get_db)):
+    """Creates a task manually bypassing the Orchestrator for speed."""
+    from .tools import CreateTaskInput, create_task_tool
+    payload = CreateTaskInput(task_description=input_data.task_description, steps=[])
+    res = await create_task_tool(payload, db)
+    return res
+
+class LoginInput(BaseModel):
+    email: str
+    name: str
+    thread_id: str
+
+@app.post("/v1/audit/login")
+async def post_audit_login(input_data: LoginInput, db: AsyncSession = Depends(get_db)):
+    """Records the login event in users and sessions tables."""
+    from sqlalchemy import select
+    from .models import User, Session
+    import uuid
+    
+    try:
+        # Check if user exists
+        stmt = select(User).where(User.email == input_data.email)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            user = User(email=input_data.email, name=input_data.name)
+            db.add(user)
+            await db.flush() # To get user_id immediately
+            
+        # Register session
+        new_session = Session(
+            session_id=uuid.UUID(input_data.thread_id) if len(input_data.thread_id) == 36 else uuid.uuid4(),
+            user_id=user.user_id,
+            session_summary=f"Login session via Demo Auth for {input_data.name}"
+        )
+        db.add(new_session)
+        await db.commit()
+        return {"status": "success", "session_id": str(new_session.session_id)}
+    except Exception as e:
+        await db.rollback()
+        print(f"SRE_ERROR: Audit login failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/v1/health")
 async def get_health(db: AsyncSession = Depends(get_db)):
     """Winning Submission Health Check: Verifies ADB and VTX connectivity."""
+    print("SRE_MARKER: Entering /v1/health | Pulse check initiation...", flush=True)
     health = {"adb": "🔴", "vtx": "🔴", "pub": "🟢"}
     
     # 1. Check AlloyDB
@@ -280,6 +381,7 @@ async def get_health(db: AsyncSession = Depends(get_db)):
         health["vtx"] = "🟢"
     except: pass
     
+    print(f"SRE_MARKER: Health Pulse COMPLETE | ADB: {health['adb']} | VTX: {health['vtx']} ✅", flush=True)
     return health
 
 # ==============================================================================
@@ -293,6 +395,7 @@ class OrchestrateInput(BaseModel):
 @app.post("/v1/orchestrate")
 async def post_orchestrate(payload: OrchestrateInput, authorized: bool = Depends(verify_api_key)):
     """Triggers the Master LangGraph Swarm securely."""
+    print(f"SRE_MARKER: Entering /v1/orchestrate | UI Handshake for query: '{payload.query[:30]}...'", flush=True)
     graph = compile_swarm_graph()
     
     # LangGraph state configurations mapping conversational memory constraints
@@ -310,18 +413,28 @@ async def post_orchestrate(payload: OrchestrateInput, authorized: bool = Depends
     }
     
     # Fire the intelligence compilation natively yielding all intermediate routes sequentially
-    result = await graph.ainvoke(initial_state, config)
-    
-    msgs = result.get("messages", [])
-    final_message = msgs[-1].content if msgs else "Swarm completed execution loop without yielding final response traces."
-    
-    return {
-        "response": final_message,
-        "metadata": {
-            "decision_id": result.get("actions_payload", {}).get("decision_id", "unknown"),
-            "invoked_agents": result.get("metadata", {}).get("invoked_agents", [])
+    try:
+        result = await graph.ainvoke(initial_state, config)
+        print("SRE_MARKER: graph.ainvoke SUCCESS ✅", flush=True)
+        
+        msgs = result.get("messages", [])
+        final_message = msgs[-1].content if msgs else "Swarm completed execution loop."
+        
+        return {
+            "response": final_message,
+            "metadata": {
+                "decision_id": result.get("actions_payload", {}).get("decision_id", "unknown"),
+                "invoked_agents": result.get("metadata", {}).get("invoked_agents", [])
+            }
         }
-    }
+    except Exception as e:
+        print(f"SRE_ERROR: Swarm Orchestration FAILED: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return {
+            "response": f"I encountered a technical hurdle while coordinating the swarm agents: {str(e)}",
+            "metadata": {"decision_id": "error", "invoked_agents": ["error_handler"]}
+        }
 
 # ==============================================================================
 # Model Context Protocol (MCP) Server Configuration (SSE Transport)

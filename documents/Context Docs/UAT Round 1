@@ -1,0 +1,57 @@
+Page by Page UAT review:
+
+1. Login page:
+
+I have added a app.txt file under Context Docs folder. Refer to the login page elements and configuration in this file where I liked the elements where 3 cards are highlighting the applications features along with application name and tagline. Also the login page is placed in another coloumn towards the right. Clicking on 'Demo Login' takes the user to the Dashboard.
+
+2. Dashboard / Homepage:
+
+The metrics showcased as cards does not have live data sync. I know there is one document which we had added yesterday and a entry as created in database but the Doc count is not in sync.
+There is a message on screen: ⚠️
+Gateway Offline: HTTPSConnectionPool(host='taskninja-backend-836906162288.us-central1.run.app', port=443): Read timed out. (read timeout=5)
+
+API: Online (looks like not linked with live data)
+MCP: SSE
+
+Lets have tiles in two rows one having 3 tiles for task related info; another row with 3 tiles for calendar info
+
+Below at the Notification data I see: 🔔 Recent Notifications (ali@example.com)
+Notification service unreachable.
+
+☁️ GCP Infrastructure shows Red for Alloydb and Vertex AI; Amber for PubSub
+
+3. Swarm Chat
+
+I'm good with the interaction overall but not sure if this is connected to the backend setup and is really able to make use of gemini-2.5-pro. Looks like the connections are not in sync
+
+4. Document Vault
+
+Document Injestion not working. message on screen : Ingestion process complete!
+❌
+Failed: prompt_library.md (HTTPSConnectionPool(host='taskninja-backend-836906162288.us-central1.run.app', port=443): Read timed out. (read timeout=60))
+
+Indicators are showing Red for Alloydb and VertexAI, AMber for PubSub
+
+Orchestrator Active
+
+5. Task Manager screen
+
+The titles with count of tasks and other info such as Today's tasks, Upcoming, Pending, Completed, etc.. is missing
+I need a button to click and add tasks.
+I need the task entries visual and clickable so that user can see the form like view with details and option to edit a task entry or update the status/ send notifications.
+
+6. Calendar
+
+I need an actual calendar like view on the screen which is interactable for the user where daily schedules and tasks are being in sync. For later versions, we can add hooks for external calendar like Google, Outlook, Slack, etc..
+
+I'm seeing this message: Project Intelligence Schedule
+Categorized view of your upcoming swarm-coordinated events.
+
+Failed to fetch calendar: string indices must be integers, not 'str'
+
+7. Audit History
+
+I see there are entries but hoping these are not placeholder entries, I need to see full flow of the action from user trigger to output response
+Can the entries have a readable quick title that shows a little info about the entry rather than json being hidden under collapsible icons. That way user can get a quick insight about the entry where cursor is placed and then they can choose to click to read it or hover over to the next or other available entries.
+
+If the audit entries are organized based on top service like task, calendar or information it can be very impactful.

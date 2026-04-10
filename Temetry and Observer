@@ -1,0 +1,45 @@
+# Implementation Plan: Observer (Telemetry) & Messenger (Notifications)
+
+This plan moves the system from "background execution" to "visible action" by establishing a persistent audit trace for agents and a real database-backed notification system.
+
+## Phase 4a: The Observer (Telemetry)
+
+### [NEW] `backend/telemetry_monitor.py`
+- **Role**: A standalone script that pulls messages from the `taskninja-events` PubSub topic.
+- **Functionality**:
+  - Automatically creates a temporary subscription if needed.
+  - Formats and prints the "Swarm Trace" (e.g., `master_orchestrator -> scheduler_node -> response_node`).
+  - Provides a real-time view of what the agents are "thinking."
+
+## Phase 4b: The Messenger (Notifications)
+
+### [MODIFY] [models.py](file:///c:/Users/user/Documents/Hackathons/GenAI_APAC_Hackathon/backend/models.py)
+- **[NEW] `Notification` Model**:
+  - `notification_id`: UUID (Primary Key)
+  - `recipient`: String (Email or User ID)
+  - `message`: Text
+  - `channel`: String (e.g., "ui_toast", "email")
+  - `status`: String (e.g., "unread", "read")
+  - `created_at`: DateTime (timezone=True)
+
+### [MODIFY] [tools.py](file:///c:/Users/user/Documents/Hackathons/GenAI_APAC_Hackathon/backend/tools.py)
+- **`send_notification_tool`**:
+  - Replace dummy response with real database persistence.
+  - Save the notification to the `notifications` table.
+- **[NEW] `fetch_notifications_tool`**:
+  - Pulls unread notifications for a specific recipient to show in the UI.
+
+### [MODIFY] [mcp_server.py](file:///c:/Users/user/Documents/Hackathons/GenAI_APAC_Hackathon/backend/mcp_server.py)
+- Expose the notification tools (send/fetch) to the MCP client.
+
+## Verification Plan
+
+### Telemetry Check
+1. Start `backend/telemetry_monitor.py` in its own terminal.
+2. Run any RAG/Calendar test.
+3. Verify the "Agent Swarm Trace" appears in the monitor terminal immediately after completion.
+
+### Notifications Check
+1. Ask TaskNinja to "Send a notification to ali@example.com that the sync is scheduled."
+2. Check the `notifications` table in AlloyDB for the record.
+3. Verify that `fetch_notifications_tool` returns the unread message.

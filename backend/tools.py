@@ -24,8 +24,8 @@ class MeetingScheduleInput(BaseModel):
     summary: str = Field(..., description="The subject or summary of the meeting.")
     start_time: datetime = Field(..., description="Start time of the meeting in ISO 8601 format.")
     end_time: datetime = Field(..., description="End time of the meeting in ISO 8601 format.")
-    participants: List[str] = Field(..., description="List of participant email addresses.")
-    attached_docs: Optional[List[str]] = Field(None, description="List of document UUIDs or GCS URIs to attach.")
+    participants: Optional[List[str]] = Field(default_factory=list, description="List of participant email addresses.")
+    attached_docs: Optional[List[str]] = Field(default_factory=list, description="List of document UUIDs or GCS URIs to attach.")
 
 class CalendarFetchInput(BaseModel):
     time_min: datetime = Field(..., description="Lower bound for fetching events.")
@@ -43,12 +43,12 @@ class NotificationFetchInput(BaseModel):
 class TaskStep(BaseModel):
     step_order: int
     tool_call: Literal["external_api_connector", "update_local_db"]
-    parameters: Dict[str, Any]
+    parameters: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 class CreateTaskInput(BaseModel):
     task_description: str = Field(..., description="High level goal of the task.")
-    steps: List[TaskStep] = Field(..., description="Sequential steps defining the multi-step execution plan.")
-    attached_docs: Optional[List[str]] = Field(None, description="List of document UUIDs or GCS URIs mapped to the task.")
+    steps: Optional[List[TaskStep]] = Field(default_factory=list, description="Sequential steps defining the multi-step execution plan.")
+    attached_docs: Optional[List[str]] = Field(default_factory=list, description="List of document UUIDs or GCS URIs mapped to the task.")
 
 class CreateDecisionLogInput(BaseModel):
     session_id: str = Field(..., description="The master session ID string.")
